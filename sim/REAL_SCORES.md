@@ -10,6 +10,7 @@ The real scorer is deterministic: the same bot gives the same score.
 | F | E with `roofs=False` | 0.92 | ? (not simulated before the real score was known; not held out) | likely `7c6c20a1235bb94c52ecb51e89bf56ab573d2f90` |
 | G | E with `roofs`, `hideouts`, `selective_fire` off | 1.25 | ? (not simulated before the real score was known; not held out) | ? |
 | H | E with `react_unseen=False` | PENDING | ? | ? |
+| v1-evade | v1 + evade-unseen (in `bot_v1.py`) | 2.10 | 3.250 (48, 0.591); not predicted before submission with a calibrated sim | `1b0732a7df648c46a5ff6acbef5048d6e36a2e9b` |
 
 Known simulator numbers, all over 48 seeds starting at seed 1, with the older, uncalibrated
 house-bot knobs: starter 2.396 (SE 0.486); v1 2.583 (SE 0.521); v2 all-on 1.438 (SE 0.289).
