@@ -195,7 +195,7 @@ class World:
 
 
 class Bot:
-    name = "survivor-v1"
+    name = "survivor-v2"
 
     def __init__(self, hello):
         cfg = hello["config"]
@@ -213,6 +213,85 @@ class Bot:
         self.sound_bearing = None
         self.sound_t = -99
         self.laser_held = False
+        self.hideout = None
+        self.hide_selected_at = -99.0
+        self.failed_roofs = set()
+        self.climb_started = -99.0
+        self.climb_progress_at = -99.0
+        self.climb_top_z = -1e6
+        self.damaged_at = -99.0
+        self.last_log = -99.0
+
+    # Hideout selection (§7-9): use the announced next circle, cached exposure,
+    # distance and roof advantage; re-rank only every few seconds.
+    def choose_hideout(self, x, y, z, me, zone, t):
+        if not CONFIG["hideouts"] or not self.world.hideouts:
+            return None
+        next_center = zone.get("next_center", zone["center"])
+        next_radius = zone.get("next_radius", zone["radius"])
+        now_center, now_radius = self.zone_now(zone,t)
+        next_known = t >= zone.get("shrink_start",1e9)-CONFIG["hide_next_lead_s"]
+        next_known |= math.hypot(x-next_center[0],y-next_center[1]) > next_radius-10
+        center = next_center if next_known else now_center
+        radius = next_radius if next_known else now_radius
+        if (self.hideout is not None and t-self.hide_selected_at < CONFIG["hide_reselect_s"]
+                and math.hypot(self.hideout[0]-center[0],self.hideout[1]-center[1]) < radius-CONFIG["hide_zone_margin"]
+                and (self.hideout[3] != "roof" or self.hideout[:2] not in self.failed_roofs)):
+            return self.hideout
+        best = None
+        best_score = 1e12
+        for h in self.world.hideouts:
+            hx,hy,hz,kind,exposure,base=h
+            dc=math.hypot(hx-center[0],hy-center[1])
+            if dc > radius-CONFIG["hide_zone_margin"]:
+                continue
+            if kind=="roof":
+                if not CONFIG["roofs"] or h[:2] in self.failed_roofs or hz-z > CONFIG["roof_max_rise"]:
+                    continue
+                if me.get("energy",0) < CONFIG["climb_energy_margin"]+25 and z<hz-3:
+                    continue
+                # Late-zone roofs become a liability when the next circle moves.
+                if t > zone.get("shrink_start",1e9)-CONFIG["roof_leave_s"] and dc > next_radius*0.65:
+                    continue
+            distance=math.hypot(hx-x,hy-y)
+            if kind=="roof" and z<hz-3 and base is not None:
+                distance=math.hypot(base[0]-x,base[1]-y)+hz-z
+            score=(CONFIG["hide_distance_weight"]*distance +
+                   CONFIG["hide_exposure_weight"]*exposure +
+                   CONFIG["hide_center_weight"]*dc -
+                   (CONFIG["hide_roof_bonus"] if kind=="roof" else 0))
+            if score<best_score:
+                best_score=score;best=h
+        self.hideout=best
+        self.hide_selected_at=t
+        return best
+
+    # Roof climb (§7): approach wall, jump/jet until feet clear, then enter.
+    def climb_move(self, h, me, t):
+        x,y,z=me["pos"]; hx,hy,hz,_,_,base=h
+        if z>=hz-0.8 and math.hypot(hx-x,hy-y)<CONFIG["hide_arrive_radius"]:
+            return 0.0,0.0,False,False,"hide-roof"
+        if z<hz-1 and base is not None:
+            bx,by=base; d=math.hypot(x-bx,y-by)
+            if d>3.0 and self.climb_started<0:
+                a=math.atan2(by-y,bx-x)
+                return math.cos(a)*CONFIG["quiet_move"],math.sin(a)*CONFIG["quiet_move"],False,False,"roof-approach"
+            if self.climb_started<0:
+                self.climb_started=t; self.climb_progress_at=t;self.climb_top_z=z
+            if z>self.climb_top_z+0.8:
+                self.climb_top_z=z;self.climb_progress_at=t
+            if (t-self.climb_started>CONFIG["climb_timeout_s"] or
+                t-self.climb_progress_at>CONFIG["climb_stall_s"] or
+                me.get("energy",0)<CONFIG["climb_energy_margin"]):
+                self.failed_roofs.add(h[:2]);self.hideout=None;self.climb_started=-99.0
+                return 0.0,0.0,False,False,"roof-abort"
+            a=math.atan2(hy-y,hx-x)
+            if z<hz+1.0:
+                # The first grounded tick jumps; later ticks hold jets.
+                return math.cos(a)*0.45,math.sin(a)*0.45,not me.get("grounded",False),bool(me.get("grounded",False)),"roof-climb"
+        self.climb_started=-99.0
+        a=math.atan2(hy-y,hx-x)
+        return math.cos(a)*0.55,math.sin(a)*0.55,False,False,"roof-enter"
 
     # ---------------------------------------------------------------- helpers
     def zone_now(self, z, t):
@@ -280,8 +359,21 @@ class Bot:
                 bestk, bestfr = k, fr
         return want + bestk * 0.35
 
-    # ---------------------------------------------------------------- main
+    # Reliability (§2, §6): always answer, including a pending upgrade.
     def act(self, obs):
+        try:
+            return self._act(obs)
+        except Exception as exc:
+            if obs.get("t",0)-self.last_log>CONFIG["log_every_s"]:
+                mf.log("v2 fallback",type(exc).__name__,str(exc)[:100])
+                self.last_log=obs.get("t",0)
+            answer={"tick":obs.get("tick",0),"move":[0,0],"boost":False,"fire":[False,False]}
+            if obs.get("offer"):
+                answer["pick"]=0
+            return answer
+
+    # Decision loop; all costly map geometry was cached at hello time.
+    def _act(self, obs):
         me = obs["self"]
         x, y, z = me["pos"]
         t = obs["t"]
@@ -294,16 +386,21 @@ class Bot:
         muzzle_h = stats.get("muzzle_height", 7 * scale)
 
         # offer
-        if obs["offer"]:
-            ids = [c["id"] for c in obs["offer"]["choices"]]
-            pick = min(range(len(ids)), key=lambda i: PICK_PRIORITY.index(ids[i]) if ids[i] in PICK_PRIORITY else 99)
-            act["pick"] = pick
+        if obs.get("offer"):
+            ids = [c.get("id") for c in obs["offer"].get("choices",[])]
+            if ids:
+                priority=PICK_PRIORITY if CONFIG["upgrades"] else []
+                act["pick"] = min(range(len(ids)),key=lambda i: priority.index(ids[i]) if ids[i] in priority else 99)
+
+        for event in obs.get("events",[]):
+            if event.get("type")=="damaged" and event.get("weapon")!="zone":
+                self.damaged_at=t
 
         # stuck detection
         speed = math.hypot(me["vel"][0], me["vel"][1])
 
         # sounds
-        for s in obs["sounds"]:
+        for s in obs.get("sounds",[]):
             if s["kind"] in ("gun", "mortar", "explosion", "laser", "lightning", "step", "boost", "npc_gun") and s["dist"] != "far":
                 self.sound_bearing = s["bearing"]
                 self.sound_t = t
@@ -349,12 +446,14 @@ class Bot:
         aim = None
         if mechs:
             target = mechs[0]
-        if target is None and npcs and hp_frac > 0.6:
+        if target is None and npcs and hp_frac > 0.6 and not CONFIG["stealth"]:
             n0 = min(npcs, key=lambda m: d2(m["pos"]))
             if d2(n0["pos"]) < 70:
                 target = n0
         tgt_d = None
-        if target is not None:
+        if target is not None and (not CONFIG["selective_fire"] or
+            (target["kind"]=="mech" and (d2(target["pos"])<CONFIG["engage_range"] or
+             t-self.damaged_at<CONFIG["fire_after_damage_s"]))):
             tp = target["pos"]
             ts = 1 + 0.05 * target.get("cubes", 0) if target["kind"] == "mech" else 0.4
             tcenter = [tp[0], tp[1], tp[2] + 4.5 * ts]
@@ -406,98 +505,83 @@ class Bot:
             if aim is not None:
                 aim[1] = max(self.cfg["mech"]["min_pitch"], min(self.cfg["mech"]["max_pitch"], aim[1]))
         # reload when calm
-        if not close and g_ammo_low(me):
+        if not close and g_ammo_low(me) and (not CONFIG["stealth"] or t-self.damaged_at<CONFIG["fire_after_damage_s"]):
             act["reload"] = True
 
         # ---------------- movement
         mx, my = 0.0, 0.0
         boost = False
+        jump = False
         mode = "idle"
 
         def toward(px, py, w=1.0):
             a = math.atan2(py - y, px - x)
             return math.cos(a) * w, math.sin(a) * w
 
-        zone_margin = 18.0
-        edge_pressure = max(0.0, (dz_center - (zr - 40)) / 40.0)  # grows near/outside edge
-        outside = (not me["in_zone"]) or dz_center > zr - 6
-        # next-circle readiness: start heading to it once the phase is about to shrink
-        heading_next = t > obs["zone"]["shrink_start"] - 25 or dn_center > nzr * 0.9
-
+        outside = (not me.get("in_zone", True)) or dz_center > zr - 7
+        threatened = bool(close and d2(close[0]["pos"]) < CONFIG["engage_range"])
+        threatened |= t-self.damaged_at < CONFIG["fire_after_damage_s"]
         if outside:
-            mode = "zone"
-            tx_, ty_ = toward(zc[0], zc[1])
-            mx, my = tx_, ty_
-            boost = me["energy"] > 15
-        elif target is not None and tgt_d is not None and tgt_d < 140:
-            mode = "fight"
-            ex, ey = target["pos"][0] - x, target["pos"][1] - y
-            ed = math.hypot(ex, ey) + 1e-6
-            rx, ry = ex / ed, ey / ed
-            n_threat = len([m for m in close if d2(m["pos"]) < 100])
-            flee = (hp_frac < 0.33 and ed > 12) or n_threat >= 3
-            if t > self.strafe_until:
-                self.strafe = -self.strafe if self.rng.random() < 0.6 else self.strafe
-                self.strafe_until = t + self.rng.uniform(0.7, 1.8)
-            px_, py_ = -ry * self.strafe, rx * self.strafe
-            desired = 70.0
-            if slot("lightning") is not None and slot("laser") is None:
-                desired = 28.0
-            radial = max(-1.0, min(1.0, (ed - desired) / 40.0))
+            mode="zone"
+            mx,my=toward(zc[0],zc[1])
+            boost=me["energy"]>CONFIG["flee_boost_energy"] and dz_center>zr+10
+        elif threatened and target is not None and tgt_d is not None:
+            ex,ey=target["pos"][0]-x,target["pos"][1]-y
+            ed=max(1e-6,math.hypot(ex,ey));rx,ry=ex/ed,ey/ed
+            n_threat=sum(d2(m["pos"])<CONFIG["enemy_safe_range"] for m in mechs)
+            flee=hp_frac<CONFIG["flee_hp_fraction"] or n_threat>=CONFIG["flee_enemy_count"]
+            if t>self.strafe_until:
+                self.strafe=-self.strafe;self.strafe_until=t+1.2
+            # Face the attacker, use lateral motion, and bias retreat toward zone safety.
+            mx,my=-ry*self.strafe,rx*self.strafe
             if flee:
-                mode = "flee"
-                mx, my = -rx * 1.0 + px_ * 0.4, -ry * 1.0 + py_ * 0.4
-                zx, zy = toward(zc[0], zc[1], 0.5)
-                mx += zx
-                my += zy
-                boost = me["energy"] > 20 and ed < 70
+                mx-=rx*0.8;my-=ry*0.8;mode="flee"
+                boost=me["energy"]>CONFIG["flee_boost_energy"] and ed<70
             else:
-                mx, my = px_ + rx * radial * 0.8, py_ + ry * radial * 0.8
-                zx, zy = toward(zc[0], zc[1], edge_pressure * 1.5)
-                mx += zx
-                my += zy
+                mode="fight"
+            if dn_center>nzr-15:
+                zx,zy=toward(nzc[0],nzc[1],0.35)
+                mx+=zx;my+=zy
         else:
-            # not fighting: loot, drops, zone positioning
-            goal = None
-            pk = [p for p in obs["pickups"] if p["kind"] != "gun" and p["kind"] not in wk
-                  and math.hypot(p["pos"][0] - zc[0], p["pos"][1] - zc[1]) < zr - 15]
-            if pk and (wk[1] is None or wk[0] is None) and hp_frac > 0.35:
-                p = min(pk, key=lambda p: d2(p["pos"]))
-                if d2(p["pos"]) < 90:
-                    goal = p["pos"]
-                    mode = "loot"
-            if goal is None:
-                cu = [c for c in obs["cubes"] if d2(c["pos"]) < 45 and math.hypot(c["pos"][0] - zc[0], c["pos"][1] - zc[1]) < zr - 12]
-                if cu and hp_frac > 0.4:
-                    goal = min(cu, key=lambda c: d2(c["pos"]))["pos"]
-                    mode = "cube"
-            if goal is None:
-                for dr in obs["drops"]:
-                    dd = d2(dr["pos"])
-                    if dd < 140 and dr["lands_in"] * 11 < dd + 40 and dr["holder"] in (None, me["id"]):
-                        if math.hypot(dr["pos"][0] - zc[0], dr["pos"][1] - zc[1]) < zr - 10:
-                            goal = dr["pos"]
-                            mode = "drop"
-                            if dd < dr["radius"] * 0.5 and dr["lands_in"] <= 0:
-                                goal = None
-                                mode = "hold-drop"
-                                mx = my = 0.0
+            # Quiet loot is limited to the spawn period or a short safe detour.
+            goal=None
+            safe=not any(d2(m["pos"])<CONFIG["enemy_safe_range"] for m in mechs)
+            if CONFIG["safe_loot"] and safe and t<CONFIG["initial_loot_s"]:
+                pk=[p for p in obs.get("pickups",[]) if p.get("kind") in WEAPON_RANK and p["kind"] not in wk
+                    and d2(p["pos"])<CONFIG["loot_radius"] and abs(p["pos"][2]-z)<4]
+                if pk and None in wk:
+                    goal=min(pk,key=lambda p:d2(p["pos"])/WEAPON_RANK[p["kind"]])["pos"];mode="loot"
+            if goal is None and CONFIG["safe_loot"] and safe:
+                cu=[c for c in obs.get("cubes",[]) if d2(c["pos"])<CONFIG["cube_radius"] and abs(c["pos"][2]-z)<4]
+                if cu:
+                    goal=min(cu,key=lambda c:d2(c["pos"]))["pos"];mode="cube"
+            if goal is None and CONFIG["drops"] and safe and hp_frac<0.75:
+                for dr in obs.get("drops",[]):
+                    dd=d2(dr["pos"])
+                    if dd<CONFIG["drop_interest_radius"] and dr.get("lands_in",99)<dd/10+5 and dr.get("holder") in (None,me["id"]):
+                        if not any(math.hypot(m["pos"][0]-dr["pos"][0],m["pos"][1]-dr["pos"][1])<CONFIG["enemy_safe_range"] for m in mechs):
+                            goal=dr["pos"];mode="drop"
                             break
-            if goal is None and mode != "hold-drop":
-                # position inside the circle we're heading to
-                cx_, cy_ = (nzc if heading_next else zc)
-                rr = (nzr if heading_next else zr) * 0.45
-                d = math.hypot(x - cx_, y - cy_)
-                if d > rr:
-                    goal = [cx_, cy_]
-                    mode = "zone-move"
+            if goal is None:
+                h=self.choose_hideout(x,y,z,me,obs["zone"],t)
+                if h is not None:
+                    if h[3]=="roof":
+                        mx,my,boost,jump,mode=self.climb_move(h,me,t)
+                    else:
+                        self.climb_started=-99.0
+                        d=math.hypot(h[0]-x,h[1]-y)
+                        if d>CONFIG["hide_arrive_radius"]:
+                            mx,my=toward(h[0],h[1],CONFIG["quiet_move"]);mode="hide-move"
+                        else:
+                            mode="hide-ground"
+                elif dn_center>nzr-12:
+                    goal=nzc;mode="zone-next"
             if goal is not None:
-                mx, my = toward(goal[0], goal[1])
-                dgoal = math.hypot(goal[0] - x, goal[1] - y)
-                if dgoal < 3.5 and mode in ("loot", "cube"):
-                    mx, my = mx * 0.2, my * 0.2
-            elif mode == "idle":
-                mx = my = 0.0
+                d=math.hypot(goal[0]-x,goal[1]-y)
+                if d>2.5:
+                    mx,my=toward(goal[0],goal[1],CONFIG["quiet_move"] if mode in ("loot","cube") else 0.8)
+                elif mode=="drop":
+                    mode="hold-drop"
 
         # dodge incoming enemy projectiles
         for pr in obs["projectiles"]:
@@ -520,7 +604,6 @@ class Bot:
             self.stuck += 1
         else:
             self.stuck = max(0, self.stuck - 1)
-        jump = False
         if self.stuck >= 6 and t > self.escape_until:
             self.escape_until = t + 1.2
             self.escape_dir = self.rng.uniform(-math.pi, math.pi)
@@ -530,7 +613,7 @@ class Bot:
             jump = True
             boost = me["energy"] > 30
             mode = "escape"
-        elif moving_cmd > 0.05:
+        elif moving_cmd > 0.05 and mode not in ("roof-climb","roof-enter"):
             ang = self.steer(x, y, math.atan2(my, mx))
             n = min(1.0, moving_cmd)
             mx, my = math.cos(ang) * n, math.sin(ang) * n
@@ -546,8 +629,11 @@ class Bot:
             elif moving_cmd > 0.3 and mode in ("zone", "zone-move", "loot", "cube", "drop", "escape"):
                 aim = [math.atan2(my, mx), 0.0]
             else:
-                self.scan += 0.5
-                aim = [me["aim"][0] + 0.9, 0.0]
+                aim = [me["aim"][0], me["aim"][1]]
+
+        if t-self.last_log >= CONFIG["log_every_s"]:
+            mf.log(f"v2 t={t:.1f} mode={mode} hp={me['hp']:.0f} en={me['energy']:.0f} alive={obs.get('alive',0)}")
+            self.last_log=t
 
         act.update(move=[round(mx, 3), round(my, 3)], boost=boost, jump=jump,
                    aim=[round(wrap(aim[0]), 4), round(aim[1], 4)], fire=fire)
