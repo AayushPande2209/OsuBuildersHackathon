@@ -19,6 +19,7 @@ CONFIG = {
     "climb_timeout_s": 14.0, "climb_stall_s": 2.5,
     "hide_reselect_s": 6.0, "hide_arrive_radius": 5.0,
     "hide_zone_margin": 15.0, "hide_next_lead_s": 32.0,
+    "zone_travel_buffer_s": 12.0, "zone_urgent_energy": 35.0,
     "hide_distance_weight": 0.12, "hide_exposure_weight": 35.0,
     "hide_roof_bonus": 12.0, "hide_center_weight": 0.06,
     "roof_leave_s": 22.0, "log_every_s": 5.0,
@@ -639,6 +640,19 @@ class Bot:
                     mx,my=toward(goal[0],goal[1],CONFIG["quiet_move"] if mode in ("loot","cube") else 0.8)
                 elif mode=="drop":
                     mode="hold-drop"
+
+        # Zone urgency (§9): quiet walking cannot outrun a distant closing circle.
+        if CONFIG["endgame"] and mode in ("hide-move","roof-approach","roof-enter","zone-next"):
+            next_out=max(0.0,dn_center-nzr+CONFIG["hide_zone_margin"])
+            time_left=max(0.0,obs["zone"].get("shrink_end",t)-t)
+            if next_out>0 and next_out/max(1.0,stats.get("walk_speed",11.7)*CONFIG["quiet_move"])+CONFIG["zone_travel_buffer_s"]>time_left:
+                dmove=math.hypot(mx,my)
+                if dmove>0.01:
+                    mx,my=mx/dmove,my/dmove
+                else:
+                    mx,my=toward(nzc[0],nzc[1])
+                boost=me["energy"]>CONFIG["zone_urgent_energy"] and next_out>30
+                mode="zone-urgent"
 
         dodge=self.evasion_move(obs,me,x,y,z)
         if dodge is not None:
