@@ -3,6 +3,7 @@
 import json
 import math
 import random
+import time
 import mechfight as mf
 
 TAU = math.tau
@@ -13,6 +14,15 @@ PICK_PRIORITY = ["armor", "plating", "nanites", "gun_damage", "gun_rate", "laser
 WEAPON_RANK = {"laser": 3, "lightning": 2, "mortar": 1}
 # Early weapon: before the first real fight, fetch a nearby weapon instead of closing in with the gun.
 EARLY_WEAPON_S = 45.0
+# Cover at spawn: move behind a building that blocks every recently seen enemy, then resume normal play.
+COVER_AT_SPAWN = True
+COVER_WINDOW_S = 40.0     # only in the opening
+COVER_MIN_ENEMY_M = 70.0  # closer than this is a real fight: do not turn our back
+COVER_RINGS = (15.0, 30.0, 45.0)
+COVER_DIRS = 16
+COVER_SEARCH_EVERY_S = 0.5
+COVER_TIMEOUT_S = 8.0
+COVER_COOLDOWN_S = 10.0
 EARLY_WEAPON_M = 70.0
 EARLY_ENEMY_CLEAR_M = 60.0
 # Heal on purpose: regen (45 HP/s) starts 5 s after the last damage dealt OR taken.
@@ -119,6 +129,73 @@ class Bot:
         self.dmg_t = -99.0
         self.dmg_bearing = None
         self.healing = False
+        self.seen = {}            # enemy id -> (t, x, y) last sighting
+        self.cover = None         # (x, y) target spot while moving to cover
+        self.cover_t0 = -99.0
+        self.cover_cool = -99.0
+        self.cover_search_t = -99.0
+        self.cover_trail = []
+
+    # ---------------------------------------------------------------- cover
+    def find_cover(self, x, y, z, enemies, zc, zr, nzc, nzr, heading_next):
+        """Closest reachable spot where a building blocks line of sight from every enemy, or None."""
+        best = None
+        deadline = time.perf_counter() + 0.006
+        enemies = sorted(enemies, key=lambda e: math.hypot(e[0] - x, e[1] - y))[:3]
+        if not enemies:
+            return None
+        # buildings that could matter: tall enough at our height and inside the box spanning us and the enemies
+        R = COVER_RINGS[-1] + 5.0
+        bx0 = min([x - R] + [e[0] for e in enemies]); bx1 = max([x + R] + [e[0] for e in enemies])
+        by0 = min([y - R] + [e[1] for e in enemies]); by1 = max([y + R] + [e[1] for e in enemies])
+        prs = [q for q in self.world.pr if q[4] <= z + 9 and q[5] >= z + 3
+               and q[2] >= bx0 and q[0] <= bx1 and q[3] >= by0 and q[1] <= by1]
+
+        def blocked(ax, ay, ex, ey):
+            dd = math.hypot(ex - ax, ey - ay)
+            if dd < 1:
+                return False
+            dx, dy = (ex - ax) / dd, (ey - ay) / dd
+            lo_x, hi_x, lo_y, hi_y = min(ax, ex), max(ax, ex), min(ay, ey), max(ay, ey)
+            for q in prs:
+                if hi_x < q[0] or lo_x > q[2] or hi_y < q[1] or lo_y > q[3]:
+                    continue
+                for e in q[6]:
+                    hit = seg_hit(ax, ay, dx, dy, *e)
+                    if hit is not None and hit < dd:
+                        return True
+            return False
+
+        for r in COVER_RINGS:
+            for k in range(COVER_DIRS):
+                a = k * TAU / COVER_DIRS
+                if time.perf_counter() > deadline:
+                    return None if best is None else (best[1], best[2])
+                cx, cy = x + math.cos(a) * r, y + math.sin(a) * r
+                if math.hypot(cx - zc[0], cy - zc[1]) > zr - 20:
+                    continue
+                if heading_next and math.hypot(cx - nzc[0], cy - nzc[1]) > nzr - 10:
+                    continue
+                pen = 0.0
+                hidden = True
+                for ex, ey in enemies:
+                    if not blocked(cx, cy, ex, ey):
+                        hidden = False
+                        break
+                    if math.hypot(cx - ex, cy - ey) < math.hypot(x - ex, y - ey):
+                        pen += 20.0  # moving toward that enemy
+                if not hidden:
+                    continue
+                if best is not None and r + pen >= best[0]:
+                    continue  # cannot beat the current best: skip the costly walk check
+                if self.world.free(x, y, a, r) < r - 1.0:
+                    continue  # cannot walk straight there
+                score = r + pen
+                if best is None or score < best[0]:
+                    best = (score, cx, cy)
+            if best is not None and best[0] <= r:
+                break  # a clean spot on this ring beats anything farther out
+        return None if best is None else (best[1], best[2])
 
     # ---------------------------------------------------------------- helpers
     def zone_now(self, z, t):
@@ -347,6 +424,52 @@ class Bot:
                 if all(math.hypot(m["pos"][0] - p["pos"][0], m["pos"][1] - p["pos"][1]) > EARLY_ENEMY_CLEAR_M for m in mechs):
                     early_grab = True
                     break
+        # ---------------- cover at spawn: break line of sight, then play normally
+        for m in mechs:
+            self.seen[m.get("id")] = (t, m["pos"][0], m["pos"][1])
+        cover_go = False
+        if COVER_AT_SPAWN and self.world.pr:
+            near_d = min((d2(m["pos"]) for m in mechs), default=None)
+            if self.cover is not None:
+                self.cover_trail.append((t, x, y))
+                while self.cover_trail and self.cover_trail[0][0] < t - 2.0:
+                    self.cover_trail.pop(0)
+                stalled = (t - self.cover_t0 > 2.0 and self.cover_trail and
+                           math.hypot(x - self.cover_trail[0][1], y - self.cover_trail[0][2]) < 2.0)
+                arrived = math.hypot(self.cover[0] - x, self.cover[1] - y) < 3.0
+                why = None
+                if self.dmg_t > self.cover_t0:
+                    why = "hit"
+                elif near_d is not None and near_d < COVER_MIN_ENEMY_M:
+                    why = "enemy-close"
+                elif stalled:
+                    why = "stalled"
+                elif t - self.cover_t0 > COVER_TIMEOUT_S:
+                    why = "timeout"
+                elif arrived:
+                    why = "arrived"
+                elif not me["in_zone"]:
+                    why = "zone"
+                if why:
+                    mf.log("cover end", why, f"t={t:.1f}", f"hp={me['hp']:.0f}", f"seen={len(mechs)}")
+                    self.cover = None
+                    self.cover_cool = t + COVER_COOLDOWN_S
+                else:
+                    cover_go = True
+            elif (t < COVER_WINDOW_S and t > self.cover_cool and mechs and not early_grab
+                  and near_d is not None and near_d >= COVER_MIN_ENEMY_M and t - self.dmg_t > 2.0
+                  and me["in_zone"] and t - self.cover_search_t >= COVER_SEARCH_EVERY_S):
+                self.cover_search_t = t
+                enemies = [(v[1], v[2]) for v in self.seen.values() if t - v[0] < 5.0]
+                spot = self.find_cover(x, y, z, enemies, zc, zr, nzc, nzr,
+                                       t > obs["zone"]["shrink_start"] - 25 or dn_center > nzr * 0.9)
+                if spot is not None:
+                    self.cover = spot
+                    self.cover_t0 = t
+                    self.cover_trail = []
+                    cover_go = True
+                    mf.log("cover go", f"t={t:.1f}", f"hp={me['hp']:.0f}", f"seen={len(enemies)}",
+                           f"d={math.hypot(spot[0] - x, spot[1] - y):.0f}")
         zone_margin = 18.0
         edge_pressure = max(0.0, (dz_center - (zr - 40)) / 40.0)  # grows near/outside edge
         outside = (not me["in_zone"]) or dz_center > zr - 6
@@ -358,6 +481,10 @@ class Bot:
             tx_, ty_ = toward(zc[0], zc[1])
             mx, my = tx_, ty_
             boost = me["energy"] > 15
+        elif cover_go:
+            mode = "cover-go"
+            mx, my = toward(self.cover[0], self.cover[1])
+            boost = False  # walking is quieter than boosting
         elif target is not None and tgt_d is not None and tgt_d < 140 and not healing and not early_grab:
             mode = "fight"
             ex, ey = target["pos"][0] - x, target["pos"][1] - y
