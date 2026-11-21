@@ -279,7 +279,8 @@ class Bot:
             bx,by=base; d=math.hypot(x-bx,y-by)
             if d>3.0 and self.climb_started<0:
                 a=math.atan2(by-y,bx-x)
-                return math.cos(a)*CONFIG["quiet_move"],math.sin(a)*CONFIG["quiet_move"],False,False,"roof-approach"
+                pace=CONFIG["quiet_move"] if CONFIG["stealth"] else 1.0
+                return math.cos(a)*pace,math.sin(a)*pace,False,False,"roof-approach"
             if self.climb_started<0:
                 self.climb_started=t; self.climb_progress_at=t;self.climb_top_z=z
             if z>self.climb_top_z+0.8:
@@ -577,6 +578,8 @@ class Bot:
             a = math.atan2(py - y, px - x)
             return math.cos(a) * w, math.sin(a) * w
 
+        quiet_pace=CONFIG["quiet_move"] if CONFIG["stealth"] else 1.0
+
         outside = (not me.get("in_zone", True)) or dz_center > zr - 7
         threatened = bool(close and d2(close[0]["pos"]) < CONFIG["engage_range"])
         threatened |= t-self.damaged_at < CONFIG["fire_after_damage_s"]
@@ -633,7 +636,7 @@ class Bot:
                         self.climb_started=-99.0
                         d=math.hypot(h[0]-x,h[1]-y)
                         if d>CONFIG["hide_arrive_radius"]:
-                            mx,my=toward(h[0],h[1],CONFIG["quiet_move"]);mode="hide-move"
+                            mx,my=toward(h[0],h[1],quiet_pace);mode="hide-move"
                         else:
                             mode="hide-ground"
                 elif dn_center>nzr-12:
@@ -643,7 +646,7 @@ class Bot:
             if goal is not None:
                 d=math.hypot(goal[0]-x,goal[1]-y)
                 if d>2.5:
-                    mx,my=toward(goal[0],goal[1],CONFIG["quiet_move"] if mode in ("loot","cube") else 0.8)
+                    mx,my=toward(goal[0],goal[1],quiet_pace if mode in ("loot","cube") else 0.8)
                 elif mode=="drop":
                     mode="hold-drop"
 
@@ -651,7 +654,7 @@ class Bot:
         if CONFIG["endgame"] and mode in ("hide-move","roof-approach","roof-enter","zone-next"):
             next_out=max(0.0,dn_center-nzr+CONFIG["hide_zone_margin"])
             time_left=max(0.0,obs["zone"].get("shrink_end",t)-t)
-            if next_out>0 and next_out/max(1.0,stats.get("walk_speed",11.7)*CONFIG["quiet_move"])+CONFIG["zone_travel_buffer_s"]>time_left:
+            if next_out>0 and next_out/max(1.0,stats.get("walk_speed",11.7)*quiet_pace)+CONFIG["zone_travel_buffer_s"]>time_left:
                 dmove=math.hypot(mx,my)
                 if dmove>0.01:
                     mx,my=mx/dmove,my/dmove
@@ -699,6 +702,8 @@ class Bot:
                 aim = [self.sound_bearing, 0.0]
             elif moving_cmd > 0.3 and mode in ("zone", "zone-move", "loot", "cube", "drop", "escape"):
                 aim = [math.atan2(my, mx), 0.0]
+            elif not CONFIG["stealth"]:
+                aim = [me["aim"][0]+0.5,0.0]
             else:
                 aim = [me["aim"][0], me["aim"][1]]
 
