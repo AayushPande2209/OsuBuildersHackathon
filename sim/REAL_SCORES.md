@@ -16,6 +16,7 @@ The real scorer is deterministic: the same bot gives the same score.
 | v1-loot | v1-evade + loot by value/need/danger | 2.17 | bug-check only | `8d50f785cc4d31910713a557c7d5ea17355e70d9` |
 | v1-lootheal | v1-loot + heal on purpose | 2.25 | bug-check only | `7e4fff1a6fa3a501e072c7b46e8337dad0fac694` |
 | v1-early | v1-lootheal + grab a real weapon before the first fight | 2.35 | bug-check only (sim 2.396 vs v1-lootheal 2.010) | `8fb868cca27f7369e7ccf3ba1d3acde9cb25067b` |
+| v1-cover | v1-early + move behind cover at spawn | 2.06 | sim paired vs v1-early +0.281 (96, SE 0.395); real -0.29 | `f1de99cf237319d4c4645b0c0847bccae67ec96f` |
 
 Known simulator numbers, all over 48 seeds starting at seed 1, with the older, uncalibrated
 house-bot knobs: starter 2.396 (SE 0.486); v1 2.583 (SE 0.521); v2 all-on 1.438 (SE 0.289).
