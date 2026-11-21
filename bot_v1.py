@@ -11,6 +11,10 @@ PICK_PRIORITY = ["armor", "plating", "nanites", "gun_damage", "gun_rate", "laser
                  "capacitor", "gun_velocity", "sensors", "mortar_reload", "mortar_splash", "jets",
                  "lightning_range", "laser_pierce", "mortar_velocity"]
 WEAPON_RANK = {"laser": 3, "lightning": 2, "mortar": 1}
+# Early weapon: before the first real fight, fetch a nearby weapon instead of closing in with the gun.
+EARLY_WEAPON_S = 45.0
+EARLY_WEAPON_M = 70.0
+EARLY_ENEMY_CLEAR_M = 60.0
 # Heal on purpose: regen (45 HP/s) starts 5 s after the last damage dealt OR taken.
 HEAL_BELOW = 0.6      # HP fraction that starts a heal
 HEAL_UNTIL = 0.9      # keep healing until this
@@ -334,6 +338,15 @@ class Bot:
             a = math.atan2(py - y, px - x)
             return math.cos(a) * w, math.sin(a) * w
 
+        # ---------------- early weapon: get a real gun before the first fight
+        early_grab = False
+        if t < EARLY_WEAPON_S and (wk[1] is None or wk[0] is None) and t - self.dmg_t > 2.0 and me["in_zone"]:
+            for p in obs["pickups"]:
+                if p["kind"] == "gun" or p["kind"] in wk or d2(p["pos"]) > EARLY_WEAPON_M:
+                    continue
+                if all(math.hypot(m["pos"][0] - p["pos"][0], m["pos"][1] - p["pos"][1]) > EARLY_ENEMY_CLEAR_M for m in mechs):
+                    early_grab = True
+                    break
         zone_margin = 18.0
         edge_pressure = max(0.0, (dz_center - (zr - 40)) / 40.0)  # grows near/outside edge
         outside = (not me["in_zone"]) or dz_center > zr - 6
@@ -345,7 +358,7 @@ class Bot:
             tx_, ty_ = toward(zc[0], zc[1])
             mx, my = tx_, ty_
             boost = me["energy"] > 15
-        elif target is not None and tgt_d is not None and tgt_d < 140 and not healing:
+        elif target is not None and tgt_d is not None and tgt_d < 140 and not healing and not early_grab:
             mode = "fight"
             ex, ey = target["pos"][0] - x, target["pos"][1] - y
             ed = math.hypot(ex, ey) + 1e-6
