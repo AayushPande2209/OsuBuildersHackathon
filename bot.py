@@ -718,7 +718,7 @@ def g_ammo_low(me):
 
 
 if CONFIG["legacy_strategy"]:
-    from bot_v1 import Bot as ActiveBot
+    from bot_v1 import SafeBot as ActiveBot
 else:
     ActiveBot = Bot
 

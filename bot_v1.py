@@ -453,3 +453,16 @@ def g_ammo_low(me):
     return bool(w and w["kind"] == "gun" and w.get("ammo", 99) < 6 and w.get("reload", 0) <= 0)
 
 
+class SafeBot(Bot):
+    """Keep the v1 decisions while guaranteeing a protocol answer on errors."""
+
+    def act(self, obs):
+        try:
+            return super().act(obs)
+        except Exception as exc:
+            mf.log("v1 fallback", type(exc).__name__, str(exc)[:100])
+            action = {"tick": obs.get("tick", 0), "move": [0, 0], "fire": [False, False]}
+            if obs.get("offer"):
+                action["pick"] = 0
+            return action
+
