@@ -11,6 +11,10 @@ PICK_PRIORITY = ["armor", "plating", "nanites", "gun_damage", "gun_rate", "laser
                  "capacitor", "gun_velocity", "sensors", "mortar_reload", "mortar_splash", "jets",
                  "lightning_range", "laser_pierce", "mortar_velocity"]
 WEAPON_RANK = {"laser": 3, "lightning": 2, "mortar": 1}
+# Heal on purpose: regen (45 HP/s) starts 5 s after the last damage dealt OR taken.
+HEAL_BELOW = 0.6      # HP fraction that starts a heal
+HEAL_UNTIL = 0.9      # keep healing until this
+HEAL_CLOSE_M = 70.0   # an enemy this close is a real fight: defend instead
 
 
 def wrap(a):
@@ -108,6 +112,7 @@ class Bot:
         self.laser_held = False
         self.dmg_t = -99.0
         self.dmg_bearing = None
+        self.healing = False
 
     # ---------------------------------------------------------------- helpers
     def zone_now(self, z, t):
@@ -305,6 +310,15 @@ class Bot:
                         fire[mo] = True
             if aim is not None:
                 aim[1] = max(self.cfg["mech"]["min_pitch"], min(self.cfg["mech"]["max_pitch"], aim[1]))
+        # ---------------- heal on purpose
+        close_mech = target is not None and target["kind"] == "mech" and tgt_d is not None and tgt_d < HEAL_CLOSE_M
+        if hp_frac < HEAL_BELOW:
+            self.healing = True
+        elif hp_frac >= HEAL_UNTIL:
+            self.healing = False
+        healing = self.healing and not close_mech and t - self.dmg_t > 3.0 and me["in_zone"]
+        if healing:
+            fire = [False, False]  # dealing damage would reset the regen timer
         # reload when calm
         if not close and g_ammo_low(me):
             act["reload"] = True
@@ -329,7 +343,7 @@ class Bot:
             tx_, ty_ = toward(zc[0], zc[1])
             mx, my = tx_, ty_
             boost = me["energy"] > 15
-        elif target is not None and tgt_d is not None and tgt_d < 140:
+        elif target is not None and tgt_d is not None and tgt_d < 140 and not healing:
             mode = "fight"
             ex, ey = target["pos"][0] - x, target["pos"][1] - y
             ed = math.hypot(ex, ey) + 1e-6
@@ -411,6 +425,16 @@ class Bot:
                     mx, my = mx * 0.2, my * 0.2
             elif mode == "idle":
                 mx = my = 0.0
+            if healing:
+                # back away from any visible mech while regen ticks
+                for m in mechs:
+                    ex, ey = m["pos"][0] - x, m["pos"][1] - y
+                    ed = math.hypot(ex, ey) + 1e-6
+                    if ed < 160:
+                        mx -= ex / ed * 0.8
+                        my -= ey / ed * 0.8
+                if mode in ("idle", "zone-move"):
+                    mode = "heal"
 
         # dodge incoming enemy projectiles
         for pr in obs["projectiles"]:
