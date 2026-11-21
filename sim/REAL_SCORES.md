@@ -18,6 +18,8 @@ The real scorer is deterministic: the same bot gives the same score.
 | v1-early | v1-lootheal + grab a real weapon before the first fight | 2.35 | bug-check only (sim 2.396 vs v1-lootheal 2.010) | `8fb868cca27f7369e7ccf3ba1d3acde9cb25067b` |
 | v1-cover | v1-early + move behind cover at spawn | 2.06 | sim paired vs v1-early +0.281 (96, SE 0.395); real -0.29 | `f1de99cf237319d4c4645b0c0847bccae67ec96f` |
 | v1-crates | v1-early + one quiet opener crate attempt | 2.10 | sim paired vs v1-early +0.385 (96, SE 0.337); real -0.25 | `4ceec7d87d972588041a26d33e785edc8392837b` |
+| v1-upgrades | v1-early + upgrade order from the real config | 2.35 | gate only | `0f1efeb4e6f53345c1352f836f40029353ae26c2` |
+| v1-early-noise | v1-early, only the bot RNG seed changed (noise probe) | 1.85 | sim noise study: SD of a 48-match score difference 0.56 | `107ee2aa2d813cd0195fcd52e2f6a704670b9835` |
 
 Known simulator numbers, all over 48 seeds starting at seed 1, with the older, uncalibrated
 house-bot knobs: starter 2.396 (SE 0.486); v1 2.583 (SE 0.521); v2 all-on 1.438 (SE 0.289).
@@ -25,3 +27,5 @@ The order of the bots matches the real scorer, but the level is too high (the si
 bots are too easy).
 
 \* The v2 all-on simulator run predates the `react_unseen` patch, so it is not exactly bot E.
+
+**Noise:** the same strategy (v1-early) scored 2.35 and 1.85 with only the bot's RNG seed changed. A single 48-match score is roughly +/-0.35 (1 SD); differences under ~0.5 between two single submissions are not evidence.
