@@ -13,6 +13,14 @@ PICK_PRIORITY = ["armor", "plating", "nanites", "gun_damage", "gun_rate", "laser
 WEAPON_RANK = {"laser": 3, "lightning": 2, "mortar": 1}
 # Early weapon: before the first real fight, fetch a nearby weapon instead of closing in with the gun.
 EARLY_WEAPON_S = 45.0
+# Crates: one attempt in the opener to break a close crate (1 cube, 50% a weapon) when it is quiet.
+CRATES = True
+CRATE_WINDOW_S = 60.0
+CRATE_MAX_M = 25.0
+CRATE_QUIET_S = 3.0       # no mech seen and no damage for this long
+CRATE_MIN_HP = 0.6
+CRATE_ZONE_MARGIN = 30.0
+CRATE_TIMEOUT_S = 6.0
 EARLY_WEAPON_M = 70.0
 EARLY_ENEMY_CLEAR_M = 60.0
 # Heal on purpose: regen (45 HP/s) starts 5 s after the last damage dealt OR taken.
@@ -119,6 +127,12 @@ class Bot:
         self.dmg_t = -99.0
         self.dmg_bearing = None
         self.healing = False
+        self.mech_seen_t = -99.0
+        self.crate_id = None
+        self.crate_t0 = -99.0
+        self.crate_tried = False
+        self.crate_trail = []
+        self.crate_end_label = None
 
     # ---------------------------------------------------------------- helpers
     def zone_now(self, z, t):
@@ -325,6 +339,64 @@ class Bot:
         healing = self.healing and not close_mech and t - self.dmg_t > 3.0 and me["in_zone"]
         if healing:
             fire = [False, False]  # dealing damage would reset the regen timer
+        # ---------------- crates: one quiet opener attempt for a cube
+        if mechs:
+            self.mech_seen_t = t
+        crate_active = False
+        crate = None
+        if CRATES:
+            quiet = (t - self.mech_seen_t > CRATE_QUIET_S and t - self.dmg_t > CRATE_QUIET_S
+                     and hp_frac >= CRATE_MIN_HP and dz_center < zr - CRATE_ZONE_MARGIN)
+            if self.crate_id is not None:
+                crate = next((c for c in obs.get("crates", []) if c["id"] == self.crate_id), None)
+                self.crate_trail.append((t, x, y))
+                while self.crate_trail and self.crate_trail[0][0] < t - 2.0:
+                    self.crate_trail.pop(0)
+                why = None
+                if crate is None or crate.get("hp", 1) <= 0:
+                    why = "broken-or-lost"
+                elif mechs:
+                    why = "sighting"
+                elif t - self.dmg_t <= CRATE_QUIET_S:
+                    why = "hit"
+                elif t - self.crate_t0 > CRATE_TIMEOUT_S:
+                    why = "timeout"
+                elif target is not None:
+                    why = "target"
+                elif (d2(crate["pos"]) > 18 and t - self.crate_t0 > 2.0 and self.crate_trail
+                      and math.hypot(x - self.crate_trail[0][1], y - self.crate_trail[0][2]) < 1.5):
+                    why = "stalled"
+                if why:
+                    mf.log("crate end", why, f"t={t:.1f}", f"hp={me['hp']:.0f}")
+                    self.crate_end_label = why
+                    self.crate_id = None
+                else:
+                    crate_active = True
+            elif (not self.crate_tried and t < CRATE_WINDOW_S and quiet and target is None
+                  and not self.healing):
+                cands = [c for c in obs.get("crates", []) if d2(c["pos"]) < CRATE_MAX_M
+                         and abs(c["pos"][2] - z) < 3.0 and c.get("hp", 1) > 0]
+                if cands:
+                    crate = min(cands, key=lambda c: d2(c["pos"]))
+                    self.crate_id = crate["id"]
+                    self.crate_t0 = t
+                    self.crate_tried = True
+                    self.crate_trail = []
+                    crate_active = True
+                    mf.log("crate go", f"t={t:.1f}", f"hp={me['hp']:.0f}", f"d={d2(crate['pos']):.0f}")
+        if crate_active and crate is not None:
+            src = [x, y, z + muzzle_h]
+            cyaw, cpit = self.angles(src, [crate["pos"][0], crate["pos"][1], crate["pos"][2] + 1.0])
+            aim = [cyaw, max(self.cfg["mech"]["min_pitch"], min(self.cfg["mech"]["max_pitch"], cpit))]
+            err = abs(wrap(cyaw - me["aim"][0]))
+            g = slot("gun")
+            if g is not None:
+                w = me["weapons"][g]
+                if err < 0.06 and w.get("ammo", 1) > 0 and w["reload"] <= 0:
+                    fire[g] = True
+            lt = slot("lightning")
+            if lt is not None and d2(crate["pos"]) < 40 and err < 0.2 and me["energy"] > 20:
+                fire[lt] = True
         # reload when calm
         if not close and g_ammo_low(me):
             act["reload"] = True
@@ -353,7 +425,11 @@ class Bot:
         # next-circle readiness: start heading to it once the phase is about to shrink
         heading_next = t > obs["zone"]["shrink_start"] - 25 or dn_center > nzr * 0.9
 
-        if outside:
+        if crate_active and crate is not None and not outside:
+            mode = "crate"
+            if d2(crate["pos"]) > 18:
+                mx, my = toward(crate["pos"][0], crate["pos"][1], 0.8)
+        elif outside:
             mode = "zone"
             tx_, ty_ = toward(zc[0], zc[1])
             mx, my = tx_, ty_
@@ -551,6 +627,9 @@ class Bot:
 
         act.update(move=[round(mx, 3), round(my, 3)], boost=boost, jump=jump,
                    aim=[round(wrap(aim[0]), 4), round(aim[1], 4)], fire=fire)
+        if self.crate_end_label:
+            mode = "crate-end:" + self.crate_end_label
+            self.crate_end_label = None
         mf.draw.label(f"{mode} hp{me['hp']:.0f}")
         return act
 
