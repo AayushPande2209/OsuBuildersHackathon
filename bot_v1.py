@@ -1,8 +1,12 @@
 """Frozen measured v1 strategy; selected when v2 experiments underperform."""
 """Mech Royale bot v1: survival-first. Zone-aware, wall-aware steering, lead-aimed gun, laser/lightning/mortar use."""
+import array
+import heapq
 import json
 import math
 import random
+import sys
+import time
 import mechfight as mf
 
 TAU = math.tau
@@ -87,6 +91,220 @@ class World:
         return True
 
 
+class Nav:
+    """Walkable 4 m grid built from the map, plus a walking-distance field to the zone centre.
+
+    Buildings that would stop a mech are walls; ground slopes too steep to walk are walls;
+    cells next to walls cost extra so routes keep clear of them. The distance field is
+    computed with Dijkstra in small time slices so no decision goes over budget.
+    """
+    CELL = 4.0
+    HEAD = 9.0
+    STEP = 1.2
+    SLICE_S = 0.010
+    NEAR_WALL_COST = 2.5
+    JET_MAX = 30.0   # walls up to this height above the ground can be jetted over (100 energy climbs ~60 m)
+
+    def __init__(self, path):
+        t0 = time.perf_counter()
+        w = json.load(open(path + "/v2/world.json"))
+        tm = w["terrain"]
+        tnx, tny = tm["nx"], tm["ny"]
+        hts = array.array("h")
+        with open(path + "/v2/" + tm.get("file", "terrain.i16"), "rb") as f:
+            hts.frombytes(f.read())
+        if sys.byteorder == "big":
+            hts.byteswap()
+        sc = tm.get("scale", 0.01)
+        b = w["bounds"]
+        c = self.CELL
+        self.x0, self.y0 = b["minX"], b["minY"]
+        self.nx = int((b["maxX"] - b["minX"]) / c) + 1
+        self.ny = int((b["maxY"] - b["minY"]) / c) + 1
+        nx, ny = self.nx, self.ny
+        n = nx * ny
+        ground = array.array("f", bytes(4 * n))
+        for j in range(ny):
+            ty = int(round((self.y0 + (j + 0.5) * c - tm["minY"]) / tm["step"]))
+            ty = min(tny - 1, max(0, ty)) * tnx
+            for i in range(nx):
+                tx = int(round((self.x0 + (i + 0.5) * c - tm["minX"]) / tm["step"]))
+                ground[j * nx + i] = hts[ty + min(tnx - 1, max(0, tx))] * sc
+        self.ground = ground
+        blocked = bytearray(n)
+        wall_h = array.array("f", bytes(4 * n))
+        for p in w["prisms"]:
+            ring = p["ring"]
+            holes = p.get("holes") or []
+            xs, ys = ring[0::2], ring[1::2]
+            i0 = max(0, int((min(xs) - self.x0) / c))
+            i1 = min(nx - 1, int((max(xs) - self.x0) / c))
+            j0 = max(0, int((min(ys) - self.y0) / c))
+            j1 = min(ny - 1, int((max(ys) - self.y0) / c))
+            for j in range(j0, j1 + 1):
+                cy = self.y0 + (j + 0.5) * c
+                for i in range(i0, i1 + 1):
+                    k = j * nx + i
+                    cx = self.x0 + (i + 0.5) * c
+                    if not _inside(ring, cx, cy) or any(_inside(h, cx, cy) for h in holes):
+                        continue
+                    g = ground[k]
+                    if p["base"] < g + self.HEAD and p["top"] > g + self.STEP:
+                        blocked[k] = 1
+                        wall_h[k] = max(wall_h[k], p["top"] - g)
+        jet = bytearray(n)
+        for k in range(n):
+            if blocked[k] and wall_h[k] <= self.JET_MAX:
+                blocked[k] = 0
+                jet[k] = 1
+        cost = array.array("f", [1.0]) * n
+        for j in range(ny):
+            for i in range(nx):
+                k = j * nx + i
+                if blocked[k]:
+                    continue
+                for dj in (-1, 0, 1):
+                    for di in (-1, 0, 1):
+                        ii, jj = i + di, j + dj
+                        if 0 <= ii < nx and 0 <= jj < ny and blocked[jj * nx + ii]:
+                            cost[k] = self.NEAR_WALL_COST
+        top_abs = array.array("f", bytes(4 * n))
+        for k in range(n):
+            if jet[k]:
+                cost[k] = 3.0 + wall_h[k] / 3.0  # taller walls cost more to cross
+                top_abs[k] = ground[k] + wall_h[k]
+        self.top_abs = top_abs
+        self.blocked = blocked
+        self.jet = jet
+        self.cost = cost
+        self.climb = math.tan(math.radians(48)) * c  # max rise between neighbouring cells
+        self.goal = None
+        self.dist = None
+        self.heap = None
+        self.done = False
+        mf.log("nav grid", f"{nx}x{ny}", f"blocked={sum(blocked)}", f"{time.perf_counter() - t0:.2f}s")
+
+    def cell(self, x, y):
+        i = int((x - self.x0) / self.CELL)
+        j = int((y - self.y0) / self.CELL)
+        if 0 <= i < self.nx and 0 <= j < self.ny:
+            return i, j
+        return None
+
+    def center(self, i, j):
+        return self.x0 + (i + 0.5) * self.CELL, self.y0 + (j + 0.5) * self.CELL
+
+    def start(self, gx, gy, seed_r=30.0):
+        """Begin a new distance field toward (gx, gy); free cells within seed_r are sources."""
+        nx, ny = self.nx, self.ny
+        self.goal = (gx, gy)
+        self.dist = array.array("d", [1e9]) * (nx * ny)
+        self.heap = []
+        r = int(seed_r / self.CELL) + 1
+        gc = self.cell(gx, gy)
+        if gc is None:
+            gc = (min(nx - 1, max(0, int((gx - self.x0) / self.CELL))), min(ny - 1, max(0, int((gy - self.y0) / self.CELL))))
+        for rr in (r, 3 * r, 8 * r):
+            for j in range(max(0, gc[1] - rr), min(ny, gc[1] + rr + 1)):
+                for i in range(max(0, gc[0] - rr), min(nx, gc[0] + rr + 1)):
+                    k = j * nx + i
+                    if not self.blocked[k]:
+                        cx, cy = self.center(i, j)
+                        d = math.hypot(cx - gx, cy - gy)
+                        if d <= rr * self.CELL:
+                            self.dist[k] = d
+                            self.heap.append((d, k))
+            if self.heap:
+                break
+        heapq.heapify(self.heap)
+        self.done = not self.heap
+
+    def step(self):
+        if self.done or self.heap is None:
+            return
+        t_end = time.perf_counter() + self.SLICE_S
+        heap, dist, blocked, cost, ground = self.heap, self.dist, self.blocked, self.cost, self.ground
+        nx, ny, climb, c = self.nx, self.ny, self.climb, self.CELL
+        diag = c * 1.4142
+        n_ops = 0
+        while heap:
+            d, k = heapq.heappop(heap)
+            if d > dist[k]:
+                continue
+            j, i = divmod(k, nx)
+            gk = ground[k]
+            for di, dj, L in ((1, 0, c), (-1, 0, c), (0, 1, c), (0, -1, c),
+                              (1, 1, diag), (1, -1, diag), (-1, 1, diag), (-1, -1, diag)):
+                ii, jj = i + di, j + dj
+                if not (0 <= ii < nx and 0 <= jj < ny):
+                    continue
+                m = jj * nx + ii
+                if blocked[m]:
+                    continue
+                if di and dj and (blocked[j * nx + ii] or blocked[jj * nx + i]):
+                    continue  # no corner cutting
+                if gk - ground[m] > climb:
+                    continue  # walking m -> k would climb a slope that is too steep
+                nd = d + L * cost[m]
+                if nd < dist[m]:
+                    dist[m] = nd
+                    heapq.heappush(heap, (nd, m))
+            n_ops += 1
+            if n_ops & 255 == 0 and time.perf_counter() > t_end:
+                return
+        self.done = True
+
+    def waypoint(self, x, y, z=-1e9, look=5):
+        """(x, y, climb) about `look` cells ahead on the shortest route to the goal, or None.
+        climb > 0: the next cells are a wall top that many metres above the bot's feet."""
+        if not self.done or self.dist is None:
+            return None
+        cc = self.cell(x, y)
+        if cc is None:
+            return None
+        nx, ny, dist = self.nx, self.ny, self.dist
+        i, j = cc
+        if dist[j * nx + i] >= 1e9:
+            best = None
+            for jj in range(max(0, j - 2), min(ny, j + 3)):
+                for ii in range(max(0, i - 2), min(nx, i + 3)):
+                    dv = dist[jj * nx + ii]
+                    if dv < 1e9 and (best is None or dv < best[0]):
+                        best = (dv, ii, jj)
+            if best is None:
+                return None
+            i, j = best[1], best[2]
+        climb = 0.0
+        for step_i in range(look):
+            k = j * nx + i
+            bi, bj, bd = i, j, dist[k]
+            for di in (-1, 0, 1):
+                for dj in (-1, 0, 1):
+                    ii, jj = i + di, j + dj
+                    if (di or dj) and 0 <= ii < nx and 0 <= jj < ny:
+                        dv = dist[jj * nx + ii]
+                        if dv < bd:
+                            bi, bj, bd = ii, jj, dv
+            if (bi, bj) == (i, j):
+                break
+            i, j = bi, bj
+            if step_i < 2 and self.jet[j * nx + i]:
+                climb = max(climb, self.top_abs[j * nx + i] - z)
+        cx, cy = self.center(i, j)
+        return cx, cy, (climb if climb > 0.8 else 0.0)
+
+
+def _inside(ring, x, y):
+    hit = False
+    n = len(ring)
+    for a in range(0, n, 2):
+        b = (a + 2) % n
+        ay, by = ring[a + 1], ring[b + 1]
+        if (ay > y) != (by > y) and x < (ring[b] - ring[a]) * (y - ay) / (by - ay) + ring[a]:
+            hit = not hit
+    return hit
+
+
 class Bot:
     name = "survivor-v1"
 
@@ -95,6 +313,13 @@ class Bot:
         self.cfg = cfg
         self.rng = random.Random(hello.get("seed", 1))
         self.world = World(hello["map"]["dir"])
+        try:
+            self.nav = Nav(hello["map"]["dir"])
+        except Exception as e:  # navigation is optional: fall back to straight-line zone travel
+            mf.log("nav init failed", type(e).__name__, str(e)[:80])
+            self.nav = None
+        self.nav_jet_until = -1.0
+        self.nav_climb = 0.0
         self.strafe = 1
         self.strafe_until = 0
         self.last_dir = None
@@ -110,6 +335,16 @@ class Bot:
         self.dmg_bearing = None
 
     # ---------------------------------------------------------------- helpers
+    def nav_waypoint(self, x, y, z):
+        if self.nav is None:
+            return None
+        try:
+            return self.nav.waypoint(x, y, z)
+        except Exception as e:
+            mf.log("nav waypoint error", type(e).__name__, str(e)[:80])
+            self.nav = None
+            return None
+
     def zone_now(self, z, t):
         if t <= z["shrink_start"]:
             return z["center"], z["radius"]
@@ -216,6 +451,16 @@ class Bot:
 
         zc, zr = self.zone_now(obs["zone"], t)
         nzc, nzr = obs["zone"]["next_center"], obs["zone"]["next_radius"]
+        nav_used = False
+        if self.nav is not None:
+            try:
+                g = self.nav.goal
+                if g is None or math.hypot(g[0] - nzc[0], g[1] - nzc[1]) > 5.0:
+                    self.nav.start(nzc[0], nzc[1])
+                self.nav.step()
+            except Exception as e:
+                mf.log("nav error", type(e).__name__, str(e)[:80])
+                self.nav = None
         dz_center = math.hypot(x - zc[0], y - zc[1])
         dn_center = math.hypot(x - nzc[0], y - nzc[1])
 
@@ -326,7 +571,12 @@ class Bot:
 
         if outside:
             mode = "zone"
-            tx_, ty_ = toward(zc[0], zc[1])
+            wp = self.nav_waypoint(x, y, z)
+            tx_, ty_ = toward(wp[0], wp[1]) if wp else toward(zc[0], zc[1])
+            nav_used = wp is not None
+            if wp and wp[2]:
+                self.nav_jet_until = t + 0.6
+                self.nav_climb = wp[2]
             mx, my = tx_, ty_
             boost = me["energy"] > 15
         elif target is not None and tgt_d is not None and tgt_d < 140:
@@ -404,6 +654,14 @@ class Bot:
                 if d > rr:
                     goal = [cx_, cy_]
                     mode = "zone-move"
+                    if heading_next:
+                        wp = self.nav_waypoint(x, y, z)
+                        if wp:
+                            goal = [wp[0], wp[1]]
+                            nav_used = True
+                            if wp[2]:
+                                self.nav_jet_until = t + 0.6
+                                self.nav_climb = wp[2]
             if goal is not None:
                 mx, my = toward(goal[0], goal[1])
                 dgoal = math.hypot(goal[0] - x, goal[1] - y)
@@ -443,6 +701,17 @@ class Bot:
             jump = True
             boost = me["energy"] > 30
             mode = "escape"
+        elif t < self.nav_jet_until and mode in ("zone", "zone-move"):
+            # route crosses a wall we can jet over: climb instead of steering away from it.
+            # Start a climb only with enough energy (~1.7 per metre); otherwise wait to recharge.
+            need = min(100.0, 1.7 * self.nav_climb + 8.0)
+            if me["grounded"] and me["energy"] < need:
+                mx = my = 0.0
+                mode = "nav-recharge"
+            else:
+                jump = True
+                boost = me["energy"] > 3
+                mode = "nav-climb"
         elif moving_cmd > 0.05:
             ang = self.steer(x, y, math.atan2(my, mx))
             n = min(1.0, moving_cmd)
