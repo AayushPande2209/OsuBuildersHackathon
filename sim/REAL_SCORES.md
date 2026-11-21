@@ -19,3 +19,4 @@ The order of the bots matches the real scorer, but the level is too high (the si
 bots are too easy).
 
 \* The v2 all-on simulator run predates the `react_unseen` patch, so it is not exactly bot E.
+| v1-nav | v1-evade + route to zone around buildings | 2.02 (assumed this commit) | 2.896 (96, 0.430) on the fixed sim; predicted -0.09 vs v1-evade, real -0.08 | `142bd263e319a2e5f5b82c79ae855d83766f121c` |
