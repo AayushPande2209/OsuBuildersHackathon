@@ -33,3 +33,13 @@ Known commits (from `git log`, which bot each one is):
 | — | 2026-11-22 | sim only | — | NOISE MEASUREMENT: v1-early vs the same bot with only its RNG seed changed, fixed sim, 96 seeds | How much does chaos alone move a 48-match score? | 41/96 matches changed place; SD of a 48-match score difference = 0.56 (halves: -0.50, +0.12) | — | — | Every real change so far (+0.07 to +0.25, -0.25 to -0.29) is within this noise if the real scorer behaves like the sim. Single 48-match scores cannot rank small changes |
 | 19 | 2026-11-22 | `0f1efeb4e6f53345c1352f836f40029353ae26c2` | v1-upgrades | v1-early + upgrade order from real config (plating, armor, nanites, laser_damage, gun_damage, gun_rate, ...) | plating x1.15 HP beats armor ~+9% EHP per pick; nanites suits heal-on-purpose | gate only | 2.35 | tie | Ties the best (2.35). Receipt BB-2D7C4FAD. Given the noise probe (#20), this says nothing either way about the upgrade order itself. |
 | 20 | 2026-11-22 | `107ee2aa2d813cd0195fcd52e2f6a704670b9835` | v1-early-noise | v1-early with only the bot RNG seed changed (+7): a noise probe, not a strategy change | Measures real-scorer chaos noise directly | — | 1.85 | — | Same strategy as v1-early (2.35), only the bot RNG seed changed: real score moved -0.50. Confirms single 48-match scores swing by about +/-0.35 from chaos alone; all real differences since v1 are within noise. If this scores far from 2.35, small real differences are noise and the final pick should rest on reasoning |
+
+## Replication plan (from #20): rank the two 2.35 finalists by averages, not single scores
+Same strategy, only the bot RNG seed changes, so each submission is an independent-ish sample of that strategy's 48-seed score.
+
+| RNG offset | v1-early (`8fb868c` family) | v1-upgrades (`0f1efeb` family) |
+| --- | --- | --- |
+| +0 | 2.35 (`8fb868c…`) | 2.35 (`0f1efeb…`) |
+| +7 | 1.85 (`107ee2a…`) | PENDING `4f354b4891ebdae808ac64b310ec6676bf2e88cc` |
+| +3 | PENDING `e448bab86d009b35a0a8a36f7ca249285b7212f6` | PENDING `68e19acc3502def5a9748192f1f3a95685d33bdb` |
+| +11 | PENDING `ec39b2f01d9e8d104101c2f3247873e072fd92fc` | PENDING `24d09d406d8200d9eb348cebc17cb50eeae9137f` |
