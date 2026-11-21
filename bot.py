@@ -673,7 +673,7 @@ class Bot:
         if t < self.escape_until:
             mx, my = math.cos(self.escape_dir), math.sin(self.escape_dir)
             jump = True
-            boost = me["energy"] > 30
+            boost = me["energy"] > CONFIG["flee_boost_energy"] and (outside or threatened)
             mode = "escape"
         elif moving_cmd > 0.05 and mode not in ("roof-climb","roof-enter"):
             ang = self.steer(x, y, math.atan2(my, mx))
