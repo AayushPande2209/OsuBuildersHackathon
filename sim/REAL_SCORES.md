@@ -7,7 +7,7 @@ The real scorer is deterministic: the same bot gives the same score.
 | starter | Kit example bot (`kit/python/example_bot.py`) | 1.15 | 2.396 (48, 0.486) | kit |
 | v1 | `bot_v1.py` / `bot.py` with `legacy_strategy=True` | 1.85 | 2.583 (48, 0.521) | likely `c3c5c1198b44d9b55eb4af5909ee04f2abf75a5f` |
 | E | v2 all switches on, roofs on, `react_unseen` on | 1.25 | 1.438 (48, 0.289)* | likely `26d3d62ccd136ff09a30257ed970da13f7cd79d8` |
-| F | E with `roofs=False` | PENDING | ? | ? |
+| F | E with `roofs=False` | 0.92 | ? (not simulated before the real score was known; not held out) | likely `7c6c20a1235bb94c52ecb51e89bf56ab573d2f90` |
 | G | E with `roofs`, `hideouts`, `selective_fire` off | PENDING | ? | ? |
 | H | E with `react_unseen=False` | PENDING | ? | ? |
 
