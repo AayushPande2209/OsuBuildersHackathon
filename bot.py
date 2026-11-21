@@ -6,7 +6,7 @@ import sys
 import mechfight as mf
 
 CONFIG = {
-    "legacy_strategy": True,
+    "legacy_strategy": False,
     "stealth": True, "hideouts": True, "roofs": True, "selective_fire": True,
     "evasion": True, "safe_loot": True, "drops": True, "upgrades": True,
     "endgame": True, "stuck_recovery": True, "npc_farm": False,
@@ -26,6 +26,7 @@ CONFIG = {
     "roof_leave_s": 22.0, "log_every_s": 5.0,
     "projectile_dodge_radius": 4.5, "mortar_dodge_radius": 10.0,
     "laser_dodge_range": 150.0, "stuck_ticks": 7,
+    "react_unseen": True, "unseen_react_s": 4.0,
 }
 
 TAU = math.tau
@@ -223,6 +224,7 @@ class Bot:
         self.climb_progress_at = -99.0
         self.climb_top_z = -1e6
         self.damaged_at = -99.0
+        self.damage_bearing = None
         self.last_log = -99.0
 
     # Hideout selection (§7-9): use the announced next circle, cached exposure,
@@ -454,6 +456,8 @@ class Bot:
         for event in obs.get("events",[]):
             if event.get("type")=="damaged" and event.get("weapon")!="zone":
                 self.damaged_at=t
+                if event.get("bearing") is not None:
+                    self.damage_bearing=event["bearing"]
 
         # stuck detection
         speed = math.hypot(me["vel"][0], me["vel"][1])
@@ -604,6 +608,18 @@ class Bot:
             if dn_center>nzr-15:
                 zx,zy=toward(nzc[0],nzc[1],0.35)
                 mx+=zx;my+=zy
+        elif (CONFIG["react_unseen"] and self.damage_bearing is not None
+              and t-self.damaged_at < CONFIG["unseen_react_s"]):
+            # Shot from outside view: don't sit still. Run away from the shot's origin,
+            # biased toward the zone, with a lateral wobble so we are hard to track.
+            mode="evade-unseen"
+            ax,ay=-math.cos(self.damage_bearing),-math.sin(self.damage_bearing)
+            if t>self.strafe_until:
+                self.strafe=-self.strafe;self.strafe_until=t+1.0
+            mx,my=ax-ay*0.5*self.strafe,ay+ax*0.5*self.strafe
+            zx,zy=toward(nzc[0],nzc[1],0.35)
+            mx+=zx;my+=zy
+            boost=me["energy"]>CONFIG["flee_boost_energy"] and hp_frac<0.6
         else:
             # Quiet loot is limited to the spawn period or a short safe detour.
             goal=None
