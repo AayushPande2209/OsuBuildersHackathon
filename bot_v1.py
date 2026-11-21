@@ -31,6 +31,72 @@ def seg_hit(px, py, dx, dy, ax, ay, bx, by):
     return None
 
 
+
+# ---------------------------------------------------------------- roofs
+ROOF_MIN_H = 6.0       # building must stand at least this tall (else it is no refuge)
+ROOF_MAX_H = 40.0      # 100 energy climbs ~60 m; keep a margin
+ROOF_CLEAR = 4.0       # safe spot at least this far from every roof edge
+ROOF_SEARCH_M = 70.0   # only consider roofs whose safe spot is this close
+ROOF_COOLDOWN_S = 10.0
+
+
+def _pt_seg(px, py, ax, ay, bx, by):
+    ex, ey = bx - ax, by - ay
+    L = ex * ex + ey * ey
+    u = 0.0 if L < 1e-9 else max(0.0, min(1.0, ((px - ax) * ex + (py - ay) * ey) / L))
+    qx, qy = ax + ex * u, ay + ey * u
+    return math.hypot(px - qx, py - qy), qx, qy
+
+
+def _in_ring(ring, x, y):
+    hit = False
+    n = len(ring)
+    for a in range(0, n, 2):
+        b = (a + 2) % n
+        ay, by = ring[a + 1], ring[b + 1]
+        if (ay > y) != (by > y) and x < (ring[b] - ring[a]) * (y - ay) / (by - ay) + ring[a]:
+            hit = not hit
+    return hit
+
+
+def build_roofs(path):
+    """Climbable roofs: (sx, sy, top, base, edges) with a safe spot (sx, sy) >= ROOF_CLEAR from edges."""
+    roofs = []
+    w = json.load(open(path + "/v2/world.json"))
+    for p in w["prisms"]:
+        if p.get("kind") != "building":
+            continue
+        h = p["top"] - p["base"]
+        if not (ROOF_MIN_H <= h <= ROOF_MAX_H):
+            continue
+        ring = p["ring"]
+        holes = p.get("holes") or []
+        xs, ys = ring[0::2], ring[1::2]
+        if max(xs) - min(xs) < 2 * ROOF_CLEAR + 2 or max(ys) - min(ys) < 2 * ROOF_CLEAR + 2:
+            continue
+        edges = []
+        for poly in [ring] + list(holes):
+            n = len(poly) // 2
+            for i in range(n):
+                j = (i + 1) % n
+                edges.append((poly[2 * i], poly[2 * i + 1], poly[2 * j], poly[2 * j + 1]))
+        step = max(3.0, max(max(xs) - min(xs), max(ys) - min(ys)) / 16.0)
+        best = None
+        yy = min(ys) + step / 2
+        while yy < max(ys):
+            xx = min(xs) + step / 2
+            while xx < max(xs):
+                if _in_ring(ring, xx, yy) and not any(_in_ring(hh, xx, yy) for hh in holes):
+                    c = min(_pt_seg(xx, yy, *e)[0] for e in edges)
+                    if best is None or c > best[0]:
+                        best = (c, xx, yy)
+                xx += step
+            yy += step
+        if best and best[0] >= ROOF_CLEAR:
+            roofs.append((best[1], best[2], p["top"], p["base"], edges))
+    return roofs
+
+
 class World:
     def __init__(self, path):
         self.pr = []  # (minx,miny,maxx,maxy,base,top,edges)
@@ -95,6 +161,17 @@ class Bot:
         self.cfg = cfg
         self.rng = random.Random(hello.get("seed", 1))
         self.world = World(hello["map"]["dir"])
+        try:
+            self.roofs = build_roofs(hello["map"]["dir"])
+        except Exception as e:  # roofs are optional
+            mf.log("roof scan failed", type(e).__name__, str(e)[:80])
+            self.roofs = []
+        mf.log("roofs", len(self.roofs))
+        self.roof = None        # (sx, sy, top, base, edges)
+        self.roof_state = None  # None | "go" | "climb" | "on"
+        self.roof_t0 = -99.0
+        self.roof_edge = None
+        self.roof_cool = -99.0
         self.strafe = 1
         self.strafe_until = 0
         self.last_dir = None
@@ -108,6 +185,94 @@ class Bot:
         self.laser_held = False
         self.dmg_t = -99.0
         self.dmg_bearing = None
+
+    # ---------------------------------------------------------------- roof logic
+    def roof_ok(self, r, zc, zr, nzc, nzr, heading_next, margin=20.0):
+        if math.hypot(r[0] - zc[0], r[1] - zc[1]) > zr - margin:
+            return False
+        if heading_next and math.hypot(r[0] - nzc[0], r[1] - nzc[1]) > nzr - margin:
+            return False
+        return True
+
+    def roof_logic(self, obs, me, t, x, y, z, mx, my, jump, boost, mode,
+                   mechs, close, hp_frac, zc, zr, nzc, nzr, heading_next):
+        st = self.roof_state
+        if st is None:
+            if t < self.roof_cool or t < 8 or not self.roofs or not mechs:
+                return mx, my, jump, boost, mode
+            near = [m for m in mechs if math.hypot(m["pos"][0] - x, m["pos"][1] - y) < 140]
+            if not near:
+                return mx, my, jump, boost, mode
+            hurt = hp_frac < 0.75 or len(close) >= 2 or t - self.dmg_t < 3.0
+            if not hurt:
+                return mx, my, jump, boost, mode
+            ex, ey = near[0]["pos"][0], near[0]["pos"][1]
+            best = None
+            for r in self.roofs:
+                d = math.hypot(r[0] - x, r[1] - y)
+                if d > ROOF_SEARCH_M or r[2] < z + 4.0:
+                    continue
+                need = 1.7 * (r[2] - z) + 12.0
+                if need > me["energy"] or not self.roof_ok(r, zc, zr, nzc, nzr, heading_next):
+                    continue
+                score = d - 0.3 * math.hypot(r[0] - ex, r[1] - ey)
+                if best is None or score < best[0]:
+                    best = (score, r)
+            if best is None:
+                return mx, my, jump, boost, mode
+            self.roof = best[1]
+            self.roof_state = "go"
+            self.roof_t0 = t
+            dmin, qx, qy = min(_pt_seg(x, y, *e) for e in self.roof[4])
+            self.roof_edge = (qx, qy)
+            mf.log("roof go", f"t={t:.0f}", f"hp={me['hp']:.0f}", f"en={me['energy']:.0f}", f"top={self.roof[2]:.0f}", f"d={dmin:.0f}")
+            st = "go"
+        r = self.roof
+        sx, sy, top = r[0], r[1], r[2]
+        def abort(why, cool=ROOF_COOLDOWN_S):
+            mf.log("roof abort", why, f"t={t:.0f}", f"hp={me['hp']:.0f}")
+            self.roof_state = None
+            self.roof_cool = t + cool
+        if st == "go":
+            if t - self.roof_t0 > 12.0 or (not me["in_zone"]):
+                abort("go-timeout")
+                return mx, my, jump, boost, mode
+            qx, qy = self.roof_edge
+            d = math.hypot(qx - x, qy - y)
+            if d < 5.0:
+                self.roof_state = "climb"
+                self.roof_t0 = t
+                st = "climb"
+            else:
+                a = math.atan2(qy - y, qx - x)
+                return math.cos(a), math.sin(a), jump, me["energy"] > 1.7 * (top - z) + 25, "roof-go"
+        if st == "climb":
+            if t - self.roof_t0 > 7.0:
+                abort("climb-timeout")
+                return mx, my, jump, boost, mode
+            if me["grounded"] and z > top - 1.0:
+                self.roof_state = "on"
+                self.roof_t0 = t
+                mf.log("roof on", f"t={t:.0f}", f"hp={me['hp']:.0f}", f"top={top:.0f}")
+                st = "on"
+            else:
+                a = math.atan2(sy - y, sx - x)
+                rising = z < top + 1.5
+                # press toward the roof while jetting; walls slide us along until our feet clear the edge
+                return math.cos(a), math.sin(a), True, me["energy"] > 0 and rising, "roof-climb"
+        if st == "on":
+            if z < top - 2.5:
+                abort("fell-off", 5.0)
+                return mx, my, jump, boost, mode
+            if (not me["in_zone"]) or not self.roof_ok(r, zc, zr, nzc, nzr, heading_next, margin=5.0):
+                abort("zone", 30.0)
+                return mx, my, jump, boost, mode
+            d = math.hypot(sx - x, sy - y)
+            if d > 2.5:
+                a = math.atan2(sy - y, sx - x)
+                return math.cos(a) * 0.7, math.sin(a) * 0.7, False, False, "roof"
+            return 0.0, 0.0, False, False, "roof"
+        return mx, my, jump, boost, mode
 
     # ---------------------------------------------------------------- helpers
     def zone_now(self, z, t):
@@ -451,6 +616,14 @@ class Bot:
         # laser charging halves speed anyway; boost only when energy ok
         if boost and me["energy"] < 8:
             boost = False
+
+        # ---------------- roofs: climb out of reach when the fight turns against us
+        try:
+            mx, my, jump, boost, mode = self.roof_logic(obs, me, t, x, y, z, mx, my, jump, boost, mode,
+                                                         mechs, close, hp_frac, zc, zr, nzc, nzr, heading_next)
+        except Exception as e:
+            mf.log("roof error", type(e).__name__, str(e)[:80])
+            self.roof_state = None
 
         # ---------------- aim when no target: scan toward sounds, else slow sweep
         if aim is None:
