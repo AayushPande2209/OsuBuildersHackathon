@@ -26,9 +26,10 @@ The simulator is an approximation being developed in a separate checkout. Its ho
 | --- | --- | --- | ---: | ---: | --- |
 | v1 baseline | frozen snapshot | 1–2 | 2 | 8.5 | Reference |
 | v2, all main switches on | frozen snapshot | 1–2 | 2 | 1.5 | Disabled by `legacy_strategy=True` |
+| v1 baseline | final simulator snapshot | 1–48 | 48 | 2.583 (SE 0.521) | Default strategy |
 | v2, all main switches on | final simulator snapshot | 1–48 | 48 | 1.438 (SE 0.289) | Disabled by `legacy_strategy=True` |
 
-The matching 48-match v1 calibration is still running in the simulator chat. Its starter benchmark on the final simulator snapshot scored 2.396 over 48 matches, versus the supplied real starter result of about 1.15. The simulator is therefore not calibrated to predict leaderboard placement. The final simulator snapshot used engine SHA-1 `159df63e8586c2648e118e305eb69686075d1493` and house SHA-1 `08ce04c66c1ccefbb321d2d4af8828e2e9962433`.
+The starter benchmark on the final simulator snapshot scored 2.396 over 48 matches, versus the supplied real starter result of about 1.15. The simulator's v1 score is also above its supplied real 1.85. The simulator is therefore not calibrated to predict leaderboard placement. The final simulator snapshot used engine SHA-1 `159df63e8586c2648e118e305eb69686075d1493` and house SHA-1 `08ce04c66c1ccefbb321d2d4af8828e2e9962433`.
 
 The kit `check.py` passed on every v2 commit. With v2 active, the check answered all 300 observations on time; local p99 was 1.4 ms and hello initialization 3.9 s. With the legacy default, p99 was 2.0 ms and hello initialization 0.1 s. These timings are from the local machine, not a 1 CPU Docker match. Docker CLI is present, but its daemon was unavailable, so the image build was not run.
 
