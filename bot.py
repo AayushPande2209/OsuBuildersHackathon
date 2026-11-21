@@ -6,6 +6,7 @@ import sys
 import mechfight as mf
 
 CONFIG = {
+    "legacy_strategy": True,
     "stealth": True, "hideouts": True, "roofs": True, "selective_fire": True,
     "evasion": True, "safe_loot": True, "drops": True, "upgrades": True,
     "endgame": True, "stuck_recovery": True, "npc_farm": False,
@@ -716,4 +717,9 @@ def g_ammo_low(me):
     return bool(w and w["kind"] == "gun" and w.get("ammo", 99) < 6 and w.get("reload", 0) <= 0)
 
 
-mf.run(Bot)
+if CONFIG["legacy_strategy"]:
+    from bot_v1 import Bot as ActiveBot
+else:
+    ActiveBot = Bot
+
+mf.run(ActiveBot)
