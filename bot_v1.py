@@ -12,7 +12,8 @@ PICK_PRIORITY = ["plating", "armor", "nanites", "laser_damage", "gun_damage", "g
                  "servos", "gun_mag", "lightning_efficiency", "lightning_chain", "gyros", "reactor",
                  "capacitor", "gun_velocity", "sensors", "mortar_reload", "mortar_splash", "jets",
                  "lightning_range", "laser_pierce", "mortar_velocity"]
-WEAPON_RANK = {"laser": 3, "lightning": 2, "mortar": 1}
+# Mortar is never taken: holding one makes enemy laser hits do +60% (cook-off). (fix from fix/v1-bugs)
+WEAPON_RANK = {"laser": 3, "lightning": 2}
 # Early weapon: before the first real fight, fetch a nearby weapon instead of closing in with the gun.
 EARLY_WEAPON_S = 45.0
 EARLY_WEAPON_M = 70.0
@@ -242,7 +243,7 @@ class Bot:
         reach = self.cfg["loot"]["pickup_radius"] - 0.6
         near_pick = [p for p in obs["pickups"] if math.hypot(p["pos"][0] - x, p["pos"][1] - y) < reach and abs(p["pos"][2] - z) < 3.5]
         for p in sorted(near_pick, key=lambda p: -WEAPON_RANK.get(p["kind"], 0)):
-            if p["kind"] == "gun" or p["kind"] in wk:
+            if p["kind"] not in WEAPON_RANK or p["kind"] in wk:
                 continue
             if wk[1] is None:
                 act["take"] = p["id"]
@@ -288,20 +289,28 @@ class Bot:
             err_l = abs(wrap(yaw_l - cur_yaw))
             charging_laser = lz is not None and (me["weapons"][lz].get("charge", 0) > 0)
 
-            if lz is not None and (charging_laser or (tgt_d < 230 and visible_los)):
+            # (laser and gun fixes from fix/v1-bugs)
+            laser_ready = False
+            if lz is not None:
+                w = me["weapons"][lz]
+                laser_ready = charging_laser or (w["cooldown"] <= 0.05 and tgt_d < 230 and visible_los)
+            if laser_ready:
                 aim = [yaw_d, pit_d]  # hitscan: no lead
                 err = abs(wrap(yaw_d - cur_yaw))
-                w = me["weapons"][lz]
-                if w["cooldown"] <= 0.05 or charging_laser:
-                    ch = w.get("charge", 0)
-                    full = self.cfg["weapons"]["laser"]["charge"] * 0.92
-                    if ch >= full and err < tol * 1.3:
-                        fire[lz] = False  # release
-                    elif ch > 0.3 and err > 0.25:
-                        fire[lz] = False
-                    else:
-                        fire[lz] = True
-            if g is not None and not (lz is not None and fire[lz]):
+                ch = w.get("charge", 0)
+                # Full charge comes from this weapon's stats (after laser_charge upgrades), not the
+                # base config. obs rounds charge to 0.01, so allow a small margin below full.
+                full_charge = w.get("stats", {}).get("charge", self.cfg["weapons"]["laser"]["charge"])
+                full = max(self.cfg["weapons"]["laser"].get("min_charge", 0.15), full_charge - 0.015)
+                if ch >= full and err < tol * 1.3:
+                    fire[lz] = False  # release
+                elif ch > 0.3 and err > 0.25:
+                    fire[lz] = False
+                else:
+                    fire[lz] = True
+                # The gun keeps firing during the charge, but only if the unled aim is on target.
+                err_l = err
+            if g is not None:
                 w = me["weapons"][g]
                 if tgt_d < 215 and visible_los and err_l < tol and w.get("ammo", 1) > 0 and w["reload"] <= 0:
                     fire[g] = True
@@ -344,7 +353,7 @@ class Bot:
         early_grab = False
         if t < EARLY_WEAPON_S and (wk[1] is None or wk[0] is None) and t - self.dmg_t > 2.0 and me["in_zone"]:
             for p in obs["pickups"]:
-                if p["kind"] == "gun" or p["kind"] in wk or d2(p["pos"]) > EARLY_WEAPON_M:
+                if p["kind"] not in WEAPON_RANK or p["kind"] in wk or d2(p["pos"]) > EARLY_WEAPON_M:
                     continue
                 if all(math.hypot(m["pos"][0] - p["pos"][0], m["pos"][1] - p["pos"][1]) > EARLY_ENEMY_CLEAR_M for m in mechs):
                     early_grab = True
@@ -427,7 +436,7 @@ class Bot:
             best = None  # (utility, pos, mode, extra)
             for p in obs["pickups"]:
                 k = p["kind"]
-                if k == "gun" or k in wk:
+                if k not in WEAPON_RANK or k in wk:
                     continue
                 if empty_slot:
                     val, rng = WEAPON_VALUE.get(k, 30.0), 120.0
@@ -543,7 +552,10 @@ class Bot:
 
         # ---------------- aim when no target: scan toward sounds, else slow sweep
         if aim is None:
-            if self.sound_bearing is not None and t - self.sound_t < 3:
+            if self.dmg_bearing is not None and t - self.dmg_t < 3:
+                # Face whoever just hit us: rear hits deal x1.5. (fix from fix/v1-bugs)
+                aim = [self.dmg_bearing, 0.0]
+            elif self.sound_bearing is not None and t - self.sound_t < 3:
                 aim = [self.sound_bearing, 0.0]
             elif moving_cmd > 0.3 and mode in ("zone", "zone-move", "loot", "cube", "drop", "escape"):
                 aim = [math.atan2(my, mx), 0.0]
