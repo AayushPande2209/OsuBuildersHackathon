@@ -3,3 +3,15 @@
 !bot.py
 !bot_v1.py
 !mechfight.py
+# Explicit exclusions (redundant with "*" above; kept so the intent survives edits)
+sim/
+sim/out/
+scripts/
+EXPERIMENTS.md
+NOTES.md
+CLAUDE.md
+*.md
+__pycache__/
+.git/
+mechfight-kit/
+kit/
