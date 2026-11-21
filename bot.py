@@ -1,14 +1,36 @@
-"""Mech Royale bot v1: survival-first. Zone-aware, wall-aware steering, lead-aimed gun, laser/lightning/mortar use."""
+"""Mech Royale v2: quiet zone positioning, optional roofs, and selective defence."""
 import json
 import math
 import random
+import sys
 import mechfight as mf
 
+CONFIG = {
+    "stealth": True, "hideouts": True, "roofs": True, "selective_fire": True,
+    "evasion": True, "safe_loot": True, "drops": True, "upgrades": True,
+    "endgame": True, "stuck_recovery": True,
+    "quiet_move": 0.36, "initial_loot_s": 12.0, "loot_radius": 28.0,
+    "cube_radius": 15.0, "drop_interest_radius": 55.0,
+    "enemy_safe_range": 100.0, "engage_range": 48.0,
+    "fire_after_damage_s": 5.0, "flee_hp_fraction": 0.32,
+    "flee_enemy_count": 3, "flee_boost_energy": 28.0,
+    "roof_min_height": 7.0, "roof_max_rise": 55.0,
+    "roof_edge_margin": 4.0, "climb_energy_margin": 24.0,
+    "climb_timeout_s": 14.0, "climb_stall_s": 2.5,
+    "hide_reselect_s": 6.0, "hide_arrive_radius": 5.0,
+    "hide_zone_margin": 15.0, "hide_next_lead_s": 32.0,
+    "hide_distance_weight": 0.018, "hide_exposure_weight": 35.0,
+    "hide_roof_bonus": 18.0, "hide_center_weight": 0.06,
+    "roof_leave_s": 22.0, "log_every_s": 5.0,
+    "projectile_dodge_radius": 4.5, "mortar_dodge_radius": 10.0,
+    "laser_dodge_range": 150.0, "stuck_ticks": 7,
+}
+
 TAU = math.tau
-PICK_PRIORITY = ["armor", "plating", "nanites", "gun_damage", "gun_rate", "laser_damage", "laser_charge",
-                 "servos", "gun_mag", "lightning_efficiency", "lightning_chain", "gyros", "reactor",
-                 "capacitor", "gun_velocity", "sensors", "mortar_reload", "mortar_splash", "jets",
-                 "lightning_range", "laser_pierce", "mortar_velocity"]
+PICK_PRIORITY = ["armor", "plating", "nanites", "sensors", "gyros", "jets", "capacitor", "reactor",
+                 "servos", "gun_damage", "gun_rate", "gun_mag", "gun_velocity",
+                 "laser_damage", "laser_charge", "laser_pierce", "lightning_efficiency",
+                 "lightning_range", "lightning_chain", "mortar_reload", "mortar_splash", "mortar_velocity"]
 WEAPON_RANK = {"laser": 3, "lightning": 2, "mortar": 1}
 
 
@@ -30,9 +52,29 @@ def seg_hit(px, py, dx, dy, ax, ay, bx, by):
     return None
 
 
+def point_in_ring(ring, x, y):
+    inside = False
+    n = len(ring) // 2
+    for i in range(n):
+        j = (i + 1) % n
+        ax, ay, bx, by = ring[2*i], ring[2*i+1], ring[2*j], ring[2*j+1]
+        if (ay > y) != (by > y) and x < ax + (y-ay)*(bx-ax)/(by-ay):
+            inside = not inside
+    return inside
+
+
+def edge_distance(x, y, edge):
+    ax, ay, bx, by = edge
+    dx, dy = bx-ax, by-ay
+    u = max(0.0, min(1.0, ((x-ax)*dx+(y-ay)*dy)/max(1e-9, dx*dx+dy*dy)))
+    return math.hypot(x-ax-u*dx, y-ay-u*dy)
+
+
 class World:
     def __init__(self, path):
         self.pr = []  # (minx,miny,maxx,maxy,base,top,edges)
+        self.roofs = []
+        self.ground = []
         try:
             w = json.load(open(path + "/v2/world.json"))
             for p in w["prisms"]:
@@ -45,9 +87,75 @@ class World:
                 xs = p["ring"][0::2]
                 ys = p["ring"][1::2]
                 self.pr.append((min(xs), min(ys), max(xs), max(ys), p["base"], p["top"], edges))
+                if p.get("kind") in ("building", "stadium"):
+                    self.roofs.append((p, edges, (min(xs), min(ys), max(xs), max(ys))))
         except Exception as e:  # map is optional
             mf.log("map load failed", e)
         self.near = []
+        self.hideouts = self.build_hideouts()
+
+    # Map and hideout geometry (§7, §8, §9). All ray work happens at hello time.
+    def solid_xy(self, x, y, z):
+        for p, _, box in self.roofs:
+            if box[0] <= x <= box[2] and box[1] <= y <= box[3] and p["base"] <= z < p["top"]:
+                if point_in_ring(p["ring"], x, y) and not any(point_in_ring(h, x, y) for h in p.get("holes") or []):
+                    return True
+        return False
+
+    def exposure(self, x, y, z):
+        blocked = 0
+        for i in range(12):
+            a = i * TAU / 12
+            dx, dy = math.cos(a), math.sin(a)
+            for q in self.pr:
+                if q[4] > z+8 or q[5] < z+2 or q[0] > x+200 or q[2] < x-200 or q[1] > y+200 or q[3] < y-200:
+                    continue
+                if any((t is not None and 0 < t < 200) for t in (seg_hit(x,y,dx,dy,*e) for e in q[6])):
+                    blocked += 1
+                    break
+        return 1.0 - blocked/12.0
+
+    def build_hideouts(self):
+        out = []
+        # Ground alcoves just outside prism corners; reject solid centers.
+        for p, edges, box in self.roofs:
+            ring = p["ring"]
+            if len(ring) < 6:
+                continue
+            cx = sum(ring[::2])/len(ring[::2]); cy = sum(ring[1::2])/len(ring[1::2])
+            for i in range(0, len(ring), max(2, 2*(len(ring)//16))):
+                vx, vy = ring[i]-cx, ring[i+1]-cy
+                d = math.hypot(vx,vy)
+                if d < 1: continue
+                gx, gy = ring[i]+vx/d*5, ring[i+1]+vy/d*5
+                if not self.solid_xy(gx,gy,p["base"]+2):
+                    out.append((gx,gy,p["base"],"ground",self.exposure(gx,gy,p["base"]),None))
+            # Sample interior points and require cylinder clearance from all edges.
+            if p["top"]-p["base"] < CONFIG["roof_min_height"] or p["top"]-p["base"] > CONFIG["roof_max_rise"]:
+                continue
+            best = None
+            for fy in (0.25,0.4,0.5,0.6,0.75):
+                for fx in (0.25,0.4,0.5,0.6,0.75):
+                    x=box[0]+(box[2]-box[0])*fx; y=box[1]+(box[3]-box[1])*fy
+                    if not point_in_ring(ring,x,y) or any(point_in_ring(h,x,y) for h in p.get("holes") or []):
+                        continue
+                    margin=min(edge_distance(x,y,e) for e in edges)
+                    if margin >= CONFIG["roof_edge_margin"] and (best is None or margin>best[0]):
+                        best=(margin,x,y)
+            if best:
+                _,x,y=best
+                # Approach from the nearest outer edge, then jet toward the roof interior.
+                edge=min(edges[:len(ring)//2],key=lambda e:edge_distance(x,y,e))
+                mx,my=(edge[0]+edge[2])/2,(edge[1]+edge[3])/2
+                vx,vy=mx-x,my-y; d=max(1e-6,math.hypot(vx,vy))
+                base=(mx+vx/d*5,my+vy/d*5)
+                if self.solid_xy(base[0],base[1],p["base"]+2):
+                    base=(mx-vx/d*5,my-vy/d*5)
+                out.append((x,y,p["top"],"roof",self.exposure(x,y,p["top"]),base))
+        # Keep lowest exposure candidates to bound per-tick ranking work.
+        ground=sorted((h for h in out if h[3]=="ground"),key=lambda h:h[4])[:180]
+        roof=[h for h in out if h[3]=="roof"]
+        return ground+roof
 
     def refresh(self, x, y, z, r=90):
         self.near = [p for p in self.pr
