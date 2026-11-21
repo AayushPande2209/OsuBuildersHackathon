@@ -104,8 +104,8 @@ class World:
 
     def exposure(self, x, y, z):
         blocked = 0
-        for i in range(12):
-            a = i * TAU / 12
+        for i in range(8):
+            a = i * TAU / 8
             dx, dy = math.cos(a), math.sin(a)
             for q in self.pr:
                 if q[4] > z+8 or q[5] < z+2 or q[0] > x+200 or q[2] < x-200 or q[1] > y+200 or q[3] < y-200:
@@ -113,7 +113,7 @@ class World:
                 if any((t is not None and 0 < t < 200) for t in (seg_hit(x,y,dx,dy,*e) for e in q[6])):
                     blocked += 1
                     break
-        return 1.0 - blocked/12.0
+        return 1.0 - blocked/8.0
 
     def build_hideouts(self):
         out = []
@@ -123,7 +123,8 @@ class World:
             if len(ring) < 6:
                 continue
             cx = sum(ring[::2])/len(ring[::2]); cy = sum(ring[1::2])/len(ring[1::2])
-            for i in range(0, len(ring), max(2, 2*(len(ring)//16))):
+            vertices=len(ring)//2
+            for i in sorted({2*(j*vertices//min(4,vertices)) for j in range(min(4,vertices))}):
                 vx, vy = ring[i]-cx, ring[i+1]-cy
                 d = math.hypot(vx,vy)
                 if d < 1: continue
