@@ -460,7 +460,10 @@ class SafeBot(Bot):
         try:
             return super().act(obs)
         except Exception as exc:
-            mf.log("v1 fallback", type(exc).__name__, str(exc)[:100])
+            t = obs.get("t", 0)
+            if t - getattr(self, "_last_error_t", -99) >= 5:
+                mf.log("v1 fallback", type(exc).__name__, str(exc)[:100])
+                self._last_error_t = t
             action = {"tick": obs.get("tick", 0), "move": [0, 0], "fire": [False, False]}
             if obs.get("offer"):
                 action["pick"] = 0
