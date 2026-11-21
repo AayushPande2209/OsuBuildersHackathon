@@ -125,7 +125,11 @@ class World:
         oldfloor=self.floor(x,y,z)
         def clear(px,py):
             floor=self.floor(px,py,z)
-            if floor-oldfloor>step or (floor-oldfloor>0 and math.degrees(math.atan2(floor-oldfloor,max(0.01,math.hypot(px-x,py-y))))>slope):
+            # Rules §7: anything taller than step_up is a wall *unless your feet are already above it*.
+            # Compare against the feet (z), not the floor under the mech, so a jetting mech can cross walls.
+            base=max(oldfloor,z)
+            grounded=z-oldfloor<0.1
+            if floor-base>step or (grounded and floor-base>0 and math.degrees(math.atan2(floor-base,max(0.01,math.hypot(px-x,py-y))))>slope):
                 return False
             for ox,oy in ((0,0),(radius,0),(-radius,0),(0,radius),(0,-radius)):
                 if self.solid(px+ox,py+oy,z+min(step,max(0,floor-z))+1):
