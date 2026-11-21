@@ -105,7 +105,7 @@ class Bot:
     def __init__(self, hello):
         cfg = hello["config"]
         self.cfg = cfg
-        self.rng = random.Random(hello.get("seed", 1))
+        self.rng = random.Random(hello.get("seed", 1) + 3)
         self.world = World(hello["map"]["dir"])
         self.strafe = 1
         self.strafe_until = 0
