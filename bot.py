@@ -150,9 +150,9 @@ class World:
                 edge=min(edges[:len(ring)//2],key=lambda e:edge_distance(x,y,e))
                 mx,my=(edge[0]+edge[2])/2,(edge[1]+edge[3])/2
                 vx,vy=mx-x,my-y; d=max(1e-6,math.hypot(vx,vy))
-                base=(mx+vx/d*5,my+vy/d*5)
+                base=(mx+vx/d*8,my+vy/d*8)
                 if self.solid_xy(base[0],base[1],p["base"]+2):
-                    base=(mx-vx/d*5,my-vy/d*5)
+                    base=(mx-vx/d*8,my-vy/d*8)
                 out.append((x,y,p["top"],"roof",self.exposure(x,y,p["top"]),base))
         # Keep lowest exposure candidates to bound per-tick ranking work.
         ground=sorted((h for h in out if h[3]=="ground"),key=lambda h:h[4])[:180]
@@ -272,8 +272,9 @@ class Bot:
     def climb_move(self, h, me, t):
         x,y,z=me["pos"]; hx,hy,hz,_,_,base=h
         if z>=hz-0.8 and math.hypot(hx-x,hy-y)<CONFIG["hide_arrive_radius"]:
+            self.climb_started=-99.0
             return 0.0,0.0,False,False,"hide-roof"
-        if z<hz+1 and base is not None:
+        if base is not None and (z<hz+1.5 or self.climb_started>=0):
             bx,by=base; d=math.hypot(x-bx,y-by)
             if d>3.0 and self.climb_started<0:
                 a=math.atan2(by-y,bx-x)
@@ -283,14 +284,18 @@ class Bot:
             if z>self.climb_top_z+0.8:
                 self.climb_top_z=z;self.climb_progress_at=t
             if (t-self.climb_started>CONFIG["climb_timeout_s"] or
-                t-self.climb_progress_at>CONFIG["climb_stall_s"] or
+                (z<hz+1.5 and t-self.climb_progress_at>CONFIG["climb_stall_s"]) or
                 me.get("energy",0)<CONFIG["climb_energy_margin"]):
                 self.failed_roofs.add(h[:2]);self.hideout=None;self.climb_started=-99.0
                 return 0.0,0.0,False,False,"roof-abort"
+            # Rise clear of the wall before moving inward, then stay aloft
+            # until the center has passed the outside roof edge.
+            if z<hz+1.5:
+                return 0.0,0.0,not me.get("grounded",False),bool(me.get("grounded",False)),"roof-climb"
             a=math.atan2(hy-y,hx-x)
-            if z<hz+1.0:
-                # The first grounded tick jumps; later ticks hold jets.
-                return math.cos(a)*0.45,math.sin(a)*0.45,not me.get("grounded",False),bool(me.get("grounded",False)),"roof-climb"
+            crossed=math.hypot(hx-x,hy-y)<math.hypot(hx-bx,hy-by)-8
+            if not crossed:
+                return math.cos(a),math.sin(a),not me.get("grounded",False),False,"roof-enter"
         self.climb_started=-99.0
         a=math.atan2(hy-y,hx-x)
         return math.cos(a)*0.55,math.sin(a)*0.55,False,False,"roof-enter"
