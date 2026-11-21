@@ -7,7 +7,7 @@ import mechfight as mf
 
 CONFIG = {
     "legacy_strategy": False,
-    "stealth": True, "hideouts": True, "roofs": True, "selective_fire": True,
+    "stealth": True, "hideouts": True, "roofs": False, "selective_fire": True,
     "evasion": True, "safe_loot": True, "drops": True, "upgrades": True,
     "endgame": True, "stuck_recovery": True, "npc_farm": False,
     "quiet_move": 0.36, "initial_loot_s": 12.0, "loot_radius": 28.0,
