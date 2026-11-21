@@ -8,7 +8,7 @@ import mechfight as mf
 CONFIG = {
     "stealth": True, "hideouts": True, "roofs": True, "selective_fire": True,
     "evasion": True, "safe_loot": True, "drops": True, "upgrades": True,
-    "endgame": True, "stuck_recovery": True,
+    "endgame": True, "stuck_recovery": True, "npc_farm": False,
     "quiet_move": 0.36, "initial_loot_s": 12.0, "loot_radius": 28.0,
     "cube_radius": 15.0, "drop_interest_radius": 55.0,
     "enemy_safe_range": 100.0, "engage_range": 48.0,
@@ -19,8 +19,8 @@ CONFIG = {
     "climb_timeout_s": 14.0, "climb_stall_s": 2.5,
     "hide_reselect_s": 6.0, "hide_arrive_radius": 5.0,
     "hide_zone_margin": 15.0, "hide_next_lead_s": 32.0,
-    "hide_distance_weight": 0.018, "hide_exposure_weight": 35.0,
-    "hide_roof_bonus": 18.0, "hide_center_weight": 0.06,
+    "hide_distance_weight": 0.12, "hide_exposure_weight": 35.0,
+    "hide_roof_bonus": 12.0, "hide_center_weight": 0.06,
     "roof_leave_s": 22.0, "log_every_s": 5.0,
     "projectile_dodge_radius": 4.5, "mortar_dodge_radius": 10.0,
     "laser_dodge_range": 150.0, "stuck_ticks": 7,
@@ -272,7 +272,7 @@ class Bot:
         x,y,z=me["pos"]; hx,hy,hz,_,_,base=h
         if z>=hz-0.8 and math.hypot(hx-x,hy-y)<CONFIG["hide_arrive_radius"]:
             return 0.0,0.0,False,False,"hide-roof"
-        if z<hz-1 and base is not None:
+        if z<hz+1 and base is not None:
             bx,by=base; d=math.hypot(x-bx,y-by)
             if d>3.0 and self.climb_started<0:
                 a=math.atan2(by-y,bx-x)
@@ -437,7 +437,10 @@ class Bot:
         if obs.get("offer"):
             ids = [c.get("id") for c in obs["offer"].get("choices",[])]
             if ids:
-                priority=PICK_PRIORITY if CONFIG["upgrades"] else []
+                carried=[w.get("kind") for w in me.get("weapons",[]) if w]
+                weapon_priority=[f"{kind}_{suffix}" for kind in carried
+                    for suffix in ("damage","charge","rate","reload","efficiency","range","splash","chain","mag","velocity","pierce")]
+                priority=(PICK_PRIORITY[:8]+weapon_priority+PICK_PRIORITY[8:]) if CONFIG["upgrades"] else []
                 act["pick"] = min(range(len(ids)),key=lambda i: priority.index(ids[i]) if ids[i] in priority else 99)
 
         for event in obs.get("events",[]):
@@ -495,7 +498,7 @@ class Bot:
         aim = None
         if mechs:
             target = mechs[0]
-        if target is None and npcs and hp_frac > 0.6 and not CONFIG["stealth"]:
+        if target is None and npcs and hp_frac > 0.8 and (CONFIG["npc_farm"] or not CONFIG["stealth"]) and t<70:
             n0 = min(npcs, key=lambda m: d2(m["pos"]))
             if d2(n0["pos"]) < 70:
                 target = n0
@@ -612,7 +615,10 @@ class Bot:
                             goal=dr["pos"];mode="drop"
                             break
             if goal is None:
-                h=self.choose_hideout(x,y,z,me,obs["zone"],t)
+                wait_late=(CONFIG["endgame"] and obs.get("alive",16)<=4 and t>210 and
+                    dn_center<nzr*0.55 and not threatened and me.get("in_zone",True) and
+                    (self.hideout is None or math.hypot(self.hideout[0]-x,self.hideout[1]-y)<CONFIG["hide_arrive_radius"]))
+                h=None if wait_late else self.choose_hideout(x,y,z,me,obs["zone"],t)
                 if h is not None:
                     if h[3]=="roof":
                         mx,my,boost,jump,mode=self.climb_move(h,me,t)
@@ -625,6 +631,8 @@ class Bot:
                             mode="hide-ground"
                 elif dn_center>nzr-12:
                     goal=nzc;mode="zone-next"
+                elif wait_late:
+                    mode="endgame-wait"
             if goal is not None:
                 d=math.hypot(goal[0]-x,goal[1]-y)
                 if d>2.5:
