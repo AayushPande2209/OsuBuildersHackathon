@@ -6,11 +6,12 @@ import random
 import mechfight as mf
 
 TAU = math.tau
-PICK_PRIORITY = ["armor", "plating", "nanites", "gun_damage", "gun_rate", "laser_damage", "laser_charge",
+PICK_PRIORITY = ["plating", "armor", "nanites", "gun_damage", "gun_rate", "laser_damage", "laser_charge",
                  "servos", "gun_mag", "lightning_efficiency", "lightning_chain", "gyros", "reactor",
                  "capacitor", "gun_velocity", "sensors", "mortar_reload", "mortar_splash", "jets",
                  "lightning_range", "laser_pierce", "mortar_velocity"]
-WEAPON_RANK = {"laser": 3, "lightning": 2, "mortar": 1}
+# Mortar is never taken: holding one makes enemy laser hits do +60% (cook-off).
+WEAPON_RANK = {"laser": 3, "lightning": 2}
 
 
 def wrap(a):
@@ -108,6 +109,7 @@ class Bot:
         self.laser_held = False
         self.dmg_t = -99.0
         self.dmg_bearing = None
+        self.recover = False  # low HP: break contact and regenerate before fighting again
 
     # ---------------------------------------------------------------- helpers
     def zone_now(self, z, t):
@@ -214,6 +216,12 @@ class Bot:
         mechs.sort(key=lambda m: d2(m["pos"]) - (60 if m.get("hp", 1400) < 400 else 0))
         close = [m for m in mechs if d2(m["pos"]) < 110]
 
+        # Recovery: enter below 33% HP, leave once regenerated to 85%.
+        if hp_frac < 0.33:
+            self.recover = True
+        elif hp_frac > 0.85:
+            self.recover = False
+
         zc, zr = self.zone_now(obs["zone"], t)
         nzc, nzr = obs["zone"]["next_center"], obs["zone"]["next_radius"]
         dz_center = math.hypot(x - zc[0], y - zc[1])
@@ -229,7 +237,7 @@ class Bot:
         reach = self.cfg["loot"]["pickup_radius"] - 0.6
         near_pick = [p for p in obs["pickups"] if math.hypot(p["pos"][0] - x, p["pos"][1] - y) < reach and abs(p["pos"][2] - z) < 3.5]
         for p in sorted(near_pick, key=lambda p: -WEAPON_RANK.get(p["kind"], 0)):
-            if p["kind"] == "gun" or p["kind"] in wk:
+            if p["kind"] not in WEAPON_RANK or p["kind"] in wk:
                 continue
             if wk[1] is None:
                 act["take"] = p["id"]
@@ -275,20 +283,27 @@ class Bot:
             err_l = abs(wrap(yaw_l - cur_yaw))
             charging_laser = lz is not None and (me["weapons"][lz].get("charge", 0) > 0)
 
-            if lz is not None and (charging_laser or (tgt_d < 230 and visible_los)):
+            laser_ready = False
+            if lz is not None:
+                w = me["weapons"][lz]
+                laser_ready = charging_laser or (w["cooldown"] <= 0.05 and tgt_d < 230 and visible_los)
+            if laser_ready:
                 aim = [yaw_d, pit_d]  # hitscan: no lead
                 err = abs(wrap(yaw_d - cur_yaw))
-                w = me["weapons"][lz]
-                if w["cooldown"] <= 0.05 or charging_laser:
-                    ch = w.get("charge", 0)
-                    full = self.cfg["weapons"]["laser"]["charge"] * 0.92
-                    if ch >= full and err < tol * 1.3:
-                        fire[lz] = False  # release
-                    elif ch > 0.3 and err > 0.25:
-                        fire[lz] = False
-                    else:
-                        fire[lz] = True
-            if g is not None and not (lz is not None and fire[lz]):
+                ch = w.get("charge", 0)
+                # Full charge comes from this weapon's stats (after laser_charge upgrades), not the
+                # base config. obs rounds charge to 0.01, so allow a small margin below full.
+                full_charge = w.get("stats", {}).get("charge", self.cfg["weapons"]["laser"]["charge"])
+                full = max(self.cfg["weapons"]["laser"].get("min_charge", 0.15), full_charge - 0.015)
+                if ch >= full and err < tol * 1.3:
+                    fire[lz] = False  # release
+                elif ch > 0.3 and err > 0.25:
+                    fire[lz] = False
+                else:
+                    fire[lz] = True
+                # The gun keeps firing during the charge, but only if the unled aim is on target.
+                err_l = err
+            if g is not None:
                 w = me["weapons"][g]
                 if tgt_d < 215 and visible_los and err_l < tol and w.get("ammo", 1) > 0 and w["reload"] <= 0:
                     fire[g] = True
@@ -303,6 +318,14 @@ class Bot:
                     aim = list(ma)
                     if abs(wrap(ma[0] - cur_yaw)) < 0.08 and me["weapons"][mo]["cooldown"] <= 0.05:
                         fire[mo] = True
+            # While recovering, any damage we deal restarts the 5 s regen timer: hold fire unless
+            # we are being shot right now or the enemy is on top of us. A laser already charging
+            # keeps its trigger state (letting go would fire it anyway).
+            if self.recover and not (t - self.dmg_t < 2.0 or tgt_d < 40):
+                for i, k in enumerate(wk):
+                    if k == "laser" and charging_laser:
+                        continue
+                    fire[i] = False
             if aim is not None:
                 aim[1] = max(self.cfg["mech"]["min_pitch"], min(self.cfg["mech"]["max_pitch"], aim[1]))
         # reload when calm
@@ -335,7 +358,7 @@ class Bot:
             ed = math.hypot(ex, ey) + 1e-6
             rx, ry = ex / ed, ey / ed
             n_threat = len([m for m in close if d2(m["pos"]) < 100])
-            flee = (hp_frac < 0.33 and ed > 12) or n_threat >= 3
+            flee = (self.recover and ed > 12) or n_threat >= 3
             if t > self.strafe_until:
                 self.strafe = -self.strafe if self.rng.random() < 0.6 else self.strafe
                 self.strafe_until = t + self.rng.uniform(0.7, 1.8)
@@ -372,16 +395,16 @@ class Bot:
         else:
             # not fighting: loot, drops, zone positioning
             goal = None
-            pk = [p for p in obs["pickups"] if p["kind"] != "gun" and p["kind"] not in wk
+            pk = [p for p in obs["pickups"] if p["kind"] in WEAPON_RANK and p["kind"] not in wk
                   and math.hypot(p["pos"][0] - zc[0], p["pos"][1] - zc[1]) < zr - 15]
-            if pk and (wk[1] is None or wk[0] is None) and hp_frac > 0.35:
+            if pk and (wk[1] is None or wk[0] is None) and not self.recover:
                 p = min(pk, key=lambda p: d2(p["pos"]))
                 if d2(p["pos"]) < 90:
                     goal = p["pos"]
                     mode = "loot"
             if goal is None:
                 cu = [c for c in obs["cubes"] if d2(c["pos"]) < 45 and math.hypot(c["pos"][0] - zc[0], c["pos"][1] - zc[1]) < zr - 12]
-                if cu and hp_frac > 0.4:
+                if cu and not self.recover:
                     goal = min(cu, key=lambda c: d2(c["pos"]))["pos"]
                     mode = "cube"
             if goal is None:
@@ -454,7 +477,10 @@ class Bot:
 
         # ---------------- aim when no target: scan toward sounds, else slow sweep
         if aim is None:
-            if self.sound_bearing is not None and t - self.sound_t < 3:
+            if self.dmg_bearing is not None and t - self.dmg_t < 3:
+                # Face whoever just hit us: rear hits deal x1.5.
+                aim = [self.dmg_bearing, 0.0]
+            elif self.sound_bearing is not None and t - self.sound_t < 3:
                 aim = [self.sound_bearing, 0.0]
             elif moving_cmd > 0.3 and mode in ("zone", "zone-move", "loot", "cube", "drop", "escape"):
                 aim = [math.atan2(my, mx), 0.0]
@@ -488,3 +514,7 @@ class SafeBot(Bot):
             if obs.get("offer"):
                 action["pick"] = 0
             return action
+
+
+if __name__ == "__main__":
+    mf.run(SafeBot)
