@@ -4,7 +4,7 @@
 Maximise the official practice score: the mean of `16 - place` over 48 matches against
 15 house bots that play as one squad, share vision and hunt this bot.
 
-- Best real score so far: **2.17** (v1-evade + loot by need, branch `v1-loot`; see `EXPERIMENTS.md` for the commit).
+- Best real score so far: **2.25** (v1 + evade-unseen + loot by need + heal on purpose, branch `v1-lootheal`; see `EXPERIMENTS.md` for the commit).
 - Submission cutoff: **Sun 11:00 AM ET**. At most **4 submissions per hour**.
 - The final round uses different seeds than the 48 practice seeds. Prefer changes with a
   clear mechanical reason (a failure seen in logs or replays) over blind parameter tweaks,
