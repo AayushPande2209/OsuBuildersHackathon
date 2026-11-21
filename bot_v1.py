@@ -106,6 +106,8 @@ class Bot:
         self.sound_bearing = None
         self.sound_t = -99
         self.laser_held = False
+        self.dmg_t = -99.0
+        self.dmg_bearing = None
 
     # ---------------------------------------------------------------- helpers
     def zone_now(self, z, t):
@@ -191,6 +193,11 @@ class Bot:
             ids = [c["id"] for c in obs["offer"]["choices"]]
             pick = min(range(len(ids)), key=lambda i: PICK_PRIORITY.index(ids[i]) if ids[i] in PICK_PRIORITY else 99)
             act["pick"] = pick
+
+        for ev in obs.get("events", []):
+            if ev.get("type") == "damaged" and ev.get("weapon") != "zone" and ev.get("bearing") is not None:
+                self.dmg_t = t
+                self.dmg_bearing = ev["bearing"]
 
         # stuck detection
         speed = math.hypot(me["vel"][0], me["vel"][1])
@@ -349,6 +356,19 @@ class Bot:
                 zx, zy = toward(zc[0], zc[1], edge_pressure * 1.5)
                 mx += zx
                 my += zy
+        elif self.dmg_bearing is not None and t - self.dmg_t < 3.0 and not (target is not None and tgt_d is not None and tgt_d < 140):
+            # Shot by something we cannot see: do not stand still. Run away from the shot's
+            # origin with a sideways wobble, biased toward the zone.
+            mode = "evade-unseen"
+            ax, ay = -math.cos(self.dmg_bearing), -math.sin(self.dmg_bearing)
+            if t > self.strafe_until:
+                self.strafe = -self.strafe
+                self.strafe_until = t + 1.0
+            mx, my = ax - ay * 0.5 * self.strafe, ay + ax * 0.5 * self.strafe
+            zx, zy = toward(zc[0], zc[1], 0.35)
+            mx += zx
+            my += zy
+            boost = me["energy"] > 40 and hp_frac < 0.6
         else:
             # not fighting: loot, drops, zone positioning
             goal = None
