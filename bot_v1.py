@@ -11,6 +11,12 @@ PICK_PRIORITY = ["armor", "plating", "nanites", "gun_damage", "gun_rate", "laser
                  "capacitor", "gun_velocity", "sensors", "mortar_reload", "mortar_splash", "jets",
                  "lightning_range", "laser_pierce", "mortar_velocity"]
 WEAPON_RANK = {"laser": 3, "lightning": 2, "mortar": 1}
+# Heal on purpose: regen (45 HP/s) starts 5 s after the last damage dealt OR taken.
+HEAL_BELOW = 0.6      # HP fraction that starts a heal
+HEAL_UNTIL = 0.9      # keep healing until this
+HEAL_CLOSE_M = 70.0   # an enemy this close is a real fight: defend instead
+# Loot by need: value of a pickup right now, before distance and danger.
+WEAPON_VALUE = {"laser": 80.0, "lightning": 70.0, "mortar": 45.0}
 
 
 def wrap(a):
@@ -108,6 +114,7 @@ class Bot:
         self.laser_held = False
         self.dmg_t = -99.0
         self.dmg_bearing = None
+        self.healing = False
 
     # ---------------------------------------------------------------- helpers
     def zone_now(self, z, t):
@@ -305,6 +312,15 @@ class Bot:
                         fire[mo] = True
             if aim is not None:
                 aim[1] = max(self.cfg["mech"]["min_pitch"], min(self.cfg["mech"]["max_pitch"], aim[1]))
+        # ---------------- heal on purpose
+        close_mech = target is not None and target["kind"] == "mech" and tgt_d is not None and tgt_d < HEAL_CLOSE_M
+        if hp_frac < HEAL_BELOW:
+            self.healing = True
+        elif hp_frac >= HEAL_UNTIL:
+            self.healing = False
+        healing = self.healing and not close_mech and t - self.dmg_t > 3.0 and me["in_zone"]
+        if healing:
+            fire = [False, False]  # dealing damage would reset the regen timer
         # reload when calm
         if not close and g_ammo_low(me):
             act["reload"] = True
@@ -329,7 +345,7 @@ class Bot:
             tx_, ty_ = toward(zc[0], zc[1])
             mx, my = tx_, ty_
             boost = me["energy"] > 15
-        elif target is not None and tgt_d is not None and tgt_d < 140:
+        elif target is not None and tgt_d is not None and tgt_d < 140 and not healing:
             mode = "fight"
             ex, ey = target["pos"][0] - x, target["pos"][1] - y
             ed = math.hypot(ex, ey) + 1e-6
@@ -372,30 +388,78 @@ class Bot:
         else:
             # not fighting: loot, drops, zone positioning
             goal = None
-            pk = [p for p in obs["pickups"] if p["kind"] != "gun" and p["kind"] not in wk
-                  and math.hypot(p["pos"][0] - zc[0], p["pos"][1] - zc[1]) < zr - 15]
-            if pk and (wk[1] is None or wk[0] is None) and hp_frac > 0.35:
-                p = min(pk, key=lambda p: d2(p["pos"]))
-                if d2(p["pos"]) < 90:
-                    goal = p["pos"]
-                    mode = "loot"
-            if goal is None:
-                cu = [c for c in obs["cubes"] if d2(c["pos"]) < 45 and math.hypot(c["pos"][0] - zc[0], c["pos"][1] - zc[1]) < zr - 12]
-                if cu and hp_frac > 0.4:
-                    goal = min(cu, key=lambda c: d2(c["pos"]))["pos"]
-                    mode = "cube"
-            if goal is None:
-                for dr in obs["drops"]:
-                    dd = d2(dr["pos"])
-                    if dd < 140 and dr["lands_in"] * 11 < dd + 40 and dr["holder"] in (None, me["id"]):
-                        if math.hypot(dr["pos"][0] - zc[0], dr["pos"][1] - zc[1]) < zr - 10:
-                            goal = dr["pos"]
-                            mode = "drop"
-                            if dd < dr["radius"] * 0.5 and dr["lands_in"] <= 0:
-                                goal = None
-                                mode = "hold-drop"
-                                mx = my = 0.0
-                            break
+            # Score every reachable item by value now / (distance + 30), skipping danger.
+            missing = 1.0 - hp_frac
+            empty_slot = wk[1] is None or wk[0] is None
+
+            def safe_spot(pos, margin):
+                if math.hypot(pos[0] - zc[0], pos[1] - zc[1]) > zr - margin:
+                    return False
+                if heading_next and math.hypot(pos[0] - nzc[0], pos[1] - nzc[1]) > nzr - 5:
+                    return False
+                return True
+
+            def danger(pos):
+                pen = 0.0
+                for m in mechs:
+                    dm = math.hypot(m["pos"][0] - pos[0], m["pos"][1] - pos[1])
+                    if dm < 60:
+                        return None  # someone is standing on it
+                    if dm < 110:
+                        pen += 25.0
+                return pen
+
+            best = None  # (utility, pos, mode, extra)
+            for p in obs["pickups"]:
+                k = p["kind"]
+                if k == "gun" or k in wk:
+                    continue
+                if empty_slot:
+                    val, rng = WEAPON_VALUE.get(k, 30.0), 120.0
+                elif WEAPON_RANK.get(k, 0) > WEAPON_RANK.get(wk[1], 0):
+                    val, rng = 25.0, 50.0
+                else:
+                    continue
+                dd = d2(p["pos"])
+                if dd > rng or not safe_spot(p["pos"], 15):
+                    continue
+                pen = danger(p["pos"])
+                if pen is None:
+                    continue
+                u = (val - pen) / (dd + 30.0)
+                if u > 0 and (best is None or u > best[0]):
+                    best = (u, p["pos"], "loot", None)
+            for c in obs["cubes"]:
+                dd = d2(c["pos"])
+                if dd > 60 or not safe_spot(c["pos"], 12):
+                    continue
+                pen = danger(c["pos"])
+                if pen is None:
+                    continue
+                val = (5.0 if me["cubes"] >= 10 else 15.0) + 25.0 * missing
+                u = (val - pen) / (dd + 30.0)
+                if u > 0 and (best is None or u > best[0]):
+                    best = (u, c["pos"], "cube", None)
+            for dr in obs["drops"]:
+                dd = d2(dr["pos"])
+                if dd > 160 or dr["holder"] not in (None, me["id"]) or dr["lands_in"] * 11 > dd + 40:
+                    continue
+                if not safe_spot(dr["pos"], 10):
+                    continue
+                pen = danger(dr["pos"])
+                if pen is None:
+                    continue
+                val = 40.0 + 120.0 * missing  # full HP + 3 cubes: worth most when hurt
+                u = (val - pen) / (dd + 30.0)
+                if u > 0 and (best is None or u > best[0]):
+                    best = (u, dr["pos"], "drop", dr)
+            if best is not None:
+                goal, mode = best[1], best[2]
+                dr = best[3]
+                if dr is not None and d2(dr["pos"]) < dr["radius"] * 0.5 and dr["lands_in"] <= 0:
+                    goal = None
+                    mode = "hold-drop"
+                    mx = my = 0.0
             if goal is None and mode != "hold-drop":
                 # position inside the circle we're heading to
                 cx_, cy_ = (nzc if heading_next else zc)
@@ -411,6 +475,16 @@ class Bot:
                     mx, my = mx * 0.2, my * 0.2
             elif mode == "idle":
                 mx = my = 0.0
+            if healing:
+                # back away from any visible mech while regen ticks
+                for m in mechs:
+                    ex, ey = m["pos"][0] - x, m["pos"][1] - y
+                    ed = math.hypot(ex, ey) + 1e-6
+                    if ed < 160:
+                        mx -= ex / ed * 0.8
+                        my -= ey / ed * 0.8
+                if mode in ("idle", "zone-move"):
+                    mode = "heal"
 
         # dodge incoming enemy projectiles
         for pr in obs["projectiles"]:
