@@ -43,3 +43,13 @@ Same strategy, only the bot RNG seed changes, so each submission is an independe
 | +7 | 1.85 (`107ee2a…`) | PENDING `4f354b4891ebdae808ac64b310ec6676bf2e88cc` |
 | +3 | PENDING `e448bab86d009b35a0a8a36f7ca249285b7212f6` | PENDING `68e19acc3502def5a9748192f1f3a95685d33bdb` |
 | +11 | PENDING `ec39b2f01d9e8d104101c2f3247873e072fd92fc` | PENDING `24d09d406d8200d9eb348cebc17cb50eeae9137f` |
+| 21 | 2026-11-22 | `3a2f2ea` (friend, branch fix/v1-bugs, built on main 3384406) | fix/v1-bugs | v1 + evade-unseen + fixes: entrypoint, laser release at the weapon's own charge, gun fires during laser charge on unled aim, never take mortar, face last attacker when no target, recover mode (<33% to 85% HP), plating first | Real bugs: after a laser_charge upgrade the old 0.92 x base-charge threshold is never reached (laser waits for the 2 s auto-fire); with a laser held the gun barely fires | — | 2.69 | best single score | One sample (noise +/-0.35). Lacks our loot-by-need, heal and early-weapon changes |
+| 22 | 2026-11-22 | `f0795f3598db6838b847204575462456d2a05178` | v1-merged | v1-upgrades + the friend's laser/gun fix, no-mortar, face-last-attacker (their recover mode left out: heal-on-purpose covers it) | Combine all mechanical fixes | sim crash check 48 matches: 0 errors | PENDING | ? | |
+
+## Replication, updated after #21 (family averages decide the final; final round uses new seeds)
+| Family | +0 | +7 | +3 |
+| --- | --- | --- | --- |
+| v1-early (`8fb868c`) | 2.35 | 1.85 | `e448bab…` not yet |
+| v1-upgrades (`0f1efeb`) | 2.35 | `4f354b4…` not yet | `68e19ac…` not yet |
+| fix/v1-bugs (friend, `3a2f2ea`) | 2.69 | PENDING `a3d2ce81a093722da6d086fb41cb15c4335ef6b8` | PENDING `b5c56741052e2dfcf5ada79d7728b8e768555910` |
+| v1-merged (`f0795f3`) | PENDING `f0795f3598db6838b847204575462456d2a05178` | PENDING `e1140c8e67ed6ab5e74ce74475d6420fe1f64997` | — |

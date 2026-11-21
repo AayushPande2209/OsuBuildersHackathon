@@ -20,6 +20,7 @@ The real scorer is deterministic: the same bot gives the same score.
 | v1-crates | v1-early + one quiet opener crate attempt | 2.10 | sim paired vs v1-early +0.385 (96, SE 0.337); real -0.25 | `4ceec7d87d972588041a26d33e785edc8392837b` |
 | v1-upgrades | v1-early + upgrade order from the real config | 2.35 | gate only | `0f1efeb4e6f53345c1352f836f40029353ae26c2` |
 | v1-early-noise | v1-early, only the bot RNG seed changed (noise probe) | 1.85 | sim noise study: SD of a 48-match score difference 0.56 | `107ee2aa2d813cd0195fcd52e2f6a704670b9835` |
+| fix/v1-bugs | friend: v1 + evade + laser/gun/mortar/facing/recover fixes | 2.69 | — | `3a2f2ea` |
 
 Known simulator numbers, all over 48 seeds starting at seed 1, with the older, uncalibrated
 house-bot knobs: starter 2.396 (SE 0.486); v1 2.583 (SE 0.521); v2 all-on 1.438 (SE 0.289).
