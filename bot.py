@@ -293,6 +293,53 @@ class Bot:
         a=math.atan2(hy-y,hx-x)
         return math.cos(a)*0.55,math.sin(a)*0.55,False,False,"roof-enter"
 
+    # Evasion (§7): react only to trajectories that could hit the cylinder.
+    def evasion_move(self, obs, me, x, y, z):
+        if not CONFIG["evasion"]:
+            return None
+        for pr in obs.get("projectiles",[]):
+            p=pr.get("pos",());v=pr.get("vel",())
+            if len(p)<3 or len(v)<3:
+                continue
+            vx,vy,vz=v; speed2=vx*vx+vy*vy
+            if speed2<1:
+                continue
+            if pr.get("kind")=="mortar":
+                gravity=self.cfg.get("weapons",{}).get("mortar",{}).get("gravity",22)
+                height=p[2]-z
+                disc=vz*vz+2*gravity*height
+                if disc<0:continue
+                impact_t=(vz+math.sqrt(disc))/max(1e-6,gravity)
+                if not 0<impact_t<2.0:continue
+                ix,iy=p[0]+vx*impact_t,p[1]+vy*impact_t
+                dx,dy=x-ix,y-iy; d=math.hypot(dx,dy)
+                if d<CONFIG["mortar_dodge_radius"]:
+                    if d<1:
+                        dx,dy=-vy,vx;d=max(1,math.hypot(dx,dy))
+                    return dx/d,dy/d,True,"dodge-mortar"
+            else:
+                rx,ry=x-p[0],y-p[1]
+                hit_t=(rx*vx+ry*vy)/speed2
+                if not 0<hit_t<0.35:continue
+                miss=math.hypot(p[0]+vx*hit_t-x,p[1]+vy*hit_t-y)
+                zh=p[2]+vz*hit_t
+                if miss<CONFIG["projectile_dodge_radius"] and z-2<zh<z+11:
+                    side=1 if (rx*vy-ry*vx)>0 else -1
+                    speed=math.sqrt(speed2)
+                    return -vy/speed*side,vx/speed*side,False,"dodge-gun"
+        for enemy in obs.get("mechs",[]):
+            if enemy.get("kind")!="mech" or not enemy.get("charging"):
+                continue
+            p=enemy.get("pos",());
+            if len(p)<2:continue
+            dx,dy=x-p[0],y-p[1];d=math.hypot(dx,dy)
+            if d>CONFIG["laser_dodge_range"] or d<1:continue
+            bearing=math.atan2(dy,dx)
+            if abs(wrap(bearing-enemy.get("aim",[0])[0]))<0.17:
+                side=1 if (me["id"]+enemy["id"])%2 else -1
+                return -dy/d*side,dx/d*side,False,"dodge-laser"
+        return None
+
     # ---------------------------------------------------------------- helpers
     def zone_now(self, z, t):
         if t <= z["shrink_start"]:
@@ -425,7 +472,8 @@ class Bot:
         # pickups
         reach = self.cfg["loot"]["pickup_radius"] - 0.6
         near_pick = [p for p in obs["pickups"] if math.hypot(p["pos"][0] - x, p["pos"][1] - y) < reach and abs(p["pos"][2] - z) < 3.5]
-        for p in sorted(near_pick, key=lambda p: -WEAPON_RANK.get(p["kind"], 0)):
+        safe_take = not CONFIG["safe_loot"] or (not close and t-self.damaged_at>CONFIG["fire_after_damage_s"])
+        for p in sorted(near_pick if safe_take else [], key=lambda p: -WEAPON_RANK.get(p["kind"], 0)):
             if p["kind"] == "gun" or p["kind"] in wk:
                 continue
             if wk[1] is None:
@@ -583,28 +631,19 @@ class Bot:
                 elif mode=="drop":
                     mode="hold-drop"
 
-        # dodge incoming enemy projectiles
-        for pr in obs["projectiles"]:
-            px, py = pr["pos"][0] - x, pr["pos"][1] - y
-            vx, vy = pr["vel"][0], pr["vel"][1]
-            vs = math.hypot(vx, vy) + 1e-6
-            along = -(px * vx + py * vy) / vs
-            if 0 < along < 30 + vs * 0.25 and math.hypot(px, py) < 90:
-                cross = (px * vy - py * vx) / vs
-                if abs(cross) < 5:
-                    s = 1 if cross <= 0 else -1
-                    mx += (-vy / vs) * s * 1.4
-                    my += (vx / vs) * s * 1.4
-                    if mode == "idle":
-                        mode = "dodge"
+        dodge=self.evasion_move(obs,me,x,y,z)
+        if dodge is not None:
+            mx,my,evade_boost,mode=dodge
+            boost=evade_boost and me["energy"]>CONFIG["flee_boost_energy"]
+            jump=mode=="dodge-mortar" and me.get("grounded",False)
 
         # stuck / escape
         moving_cmd = math.hypot(mx, my)
-        if moving_cmd > 0.4 and speed < 1.5 and me["grounded"]:
+        if moving_cmd > 0.1 and speed < 1.5 and me["grounded"] and mode not in ("roof-climb","roof-enter","hide-roof"):
             self.stuck += 1
         else:
             self.stuck = max(0, self.stuck - 1)
-        if self.stuck >= 6 and t > self.escape_until:
+        if CONFIG["stuck_recovery"] and self.stuck >= CONFIG["stuck_ticks"] and t > self.escape_until:
             self.escape_until = t + 1.2
             self.escape_dir = self.rng.uniform(-math.pi, math.pi)
             self.stuck = 0
@@ -624,7 +663,10 @@ class Bot:
 
         # ---------------- aim when no target: scan toward sounds, else slow sweep
         if aim is None:
-            if self.sound_bearing is not None and t - self.sound_t < 3:
+            recent_damage=next((e for e in reversed(obs.get("events",[])) if e.get("type")=="damaged" and e.get("bearing") is not None),None)
+            if recent_damage is not None:
+                aim=[recent_damage["bearing"],0.0]
+            elif self.sound_bearing is not None and t - self.sound_t < 3:
                 aim = [self.sound_bearing, 0.0]
             elif moving_cmd > 0.3 and mode in ("zone", "zone-move", "loot", "cube", "drop", "escape"):
                 aim = [math.atan2(my, mx), 0.0]
