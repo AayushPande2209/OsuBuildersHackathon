@@ -8,7 +8,7 @@ The real scorer is deterministic: the same bot gives the same score.
 | v1 | `bot_v1.py` / `bot.py` with `legacy_strategy=True` | 1.85 | 2.583 (48, 0.521) | likely `c3c5c1198b44d9b55eb4af5909ee04f2abf75a5f` |
 | E | v2 all switches on, roofs on, `react_unseen` on | 1.25 | 1.438 (48, 0.289)* | likely `26d3d62ccd136ff09a30257ed970da13f7cd79d8` |
 | F | E with `roofs=False` | 0.92 | ? (not simulated before the real score was known; not held out) | likely `7c6c20a1235bb94c52ecb51e89bf56ab573d2f90` |
-| G | E with `roofs`, `hideouts`, `selective_fire` off | PENDING | ? | ? |
+| G | E with `roofs`, `hideouts`, `selective_fire` off | 1.25 | ? (not simulated before the real score was known; not held out) | ? |
 | H | E with `react_unseen=False` | PENDING | ? | ? |
 
 Known simulator numbers, all over 48 seeds starting at seed 1, with the older, uncalibrated
