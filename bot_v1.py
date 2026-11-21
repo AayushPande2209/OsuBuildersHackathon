@@ -6,7 +6,9 @@ import random
 import mechfight as mf
 
 TAU = math.tau
-PICK_PRIORITY = ["armor", "plating", "nanites", "gun_damage", "gun_rate", "laser_damage", "laser_charge",
+# Upgrade order from the real config: plating (x1.15 HP) beats armor (-8% damage, ~+9% effective HP)
+# per pick; nanites (regen x1.6, starts 1.5 s sooner) suits the heal-on-purpose behaviour.
+PICK_PRIORITY = ["plating", "armor", "nanites", "laser_damage", "gun_damage", "gun_rate", "laser_charge",
                  "servos", "gun_mag", "lightning_efficiency", "lightning_chain", "gyros", "reactor",
                  "capacitor", "gun_velocity", "sensors", "mortar_reload", "mortar_splash", "jets",
                  "lightning_range", "laser_pierce", "mortar_velocity"]
