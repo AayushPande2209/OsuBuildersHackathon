@@ -53,3 +53,12 @@ Same strategy, only the bot RNG seed changes, so each submission is an independe
 | v1-upgrades (`0f1efeb`) | 2.35 | `4f354b4…` not yet | `68e19ac…` not yet |
 | fix/v1-bugs (friend, `3a2f2ea`) | 2.69 | PENDING `a3d2ce81a093722da6d086fb41cb15c4335ef6b8` | PENDING `b5c56741052e2dfcf5ada79d7728b8e768555910` |
 | v1-merged (`f0795f3`) | PENDING `f0795f3598db6838b847204575462456d2a05178` | PENDING `e1140c8e67ed6ab5e74ce74475d6420fe1f64997` | — |
+| 23 | 2026-11-22 | `989ef4d66ca157746834e0f1b4cf42cdd0e3c69e` | v2-aimsplit (on fix/v1-bugs 3a2f2ea) | Split laser/gun aim: lead aim for the gun during a laser charge (both triggers), direct aim only for the last 0.15 s, release when aligned | While charging, gun rounds flew along the unled beam line and missed movers | sim crash check 48 matches: 0 errors; p99 0.7 ms | PENDING | ? | New plan: build from the friend's 2.69 bot with narrow mechanical fixes; compare paired seed averages |
+
+## Paired comparison: fix/v1-bugs (baseline) vs v2-aimsplit (candidate), same RNG offsets
+| RNG offset | fix/v1-bugs baseline | v2-aimsplit candidate |
+| --- | --- | --- |
+| +0 | 2.69 (`3a2f2ea`) | PENDING `989ef4d66ca157746834e0f1b4cf42cdd0e3c69e` |
+| +7 | PENDING `a3d2ce81a093722da6d086fb41cb15c4335ef6b8` | PENDING `0027d7551c8614bb15fcd010c94c7d2b58ea27d2` |
+| +3 | PENDING `b5c56741052e2dfcf5ada79d7728b8e768555910` | PENDING `7ebbe1bfd7f58209921abc2b6a6387e4b2ebce35` |
+Queued after the aim result: recovery guard (no drop chasing/holding while recover=True; keep moving away from attackers toward zone safety until 85% HP).
