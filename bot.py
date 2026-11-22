@@ -12,6 +12,9 @@ PICK_PRIORITY = ["plating", "armor", "nanites", "gun_damage", "gun_rate", "laser
                  "lightning_range", "laser_pierce", "mortar_velocity"]
 # Mortar is never taken: holding one makes enemy laser hits do +60% (cook-off).
 WEAPON_RANK = {"laser": 3, "lightning": 2}
+# Split laser/gun aim: lead-aim (for the gun) for most of a laser charge, switch to direct aim
+# (for the hitscan beam) only for this last part of the charge.
+LASER_DIRECT_S = 0.15
 
 
 def wrap(a):
@@ -288,21 +291,27 @@ class Bot:
                 w = me["weapons"][lz]
                 laser_ready = charging_laser or (w["cooldown"] <= 0.05 and tgt_d < 230 and visible_los)
             if laser_ready:
-                aim = [yaw_d, pit_d]  # hitscan: no lead
-                err = abs(wrap(yaw_d - cur_yaw))
                 ch = w.get("charge", 0)
                 # Full charge comes from this weapon's stats (after laser_charge upgrades), not the
                 # base config. obs rounds charge to 0.01, so allow a small margin below full.
                 full_charge = w.get("stats", {}).get("charge", self.cfg["weapons"]["laser"]["charge"])
                 full = max(self.cfg["weapons"]["laser"].get("min_charge", 0.15), full_charge - 0.015)
+                err = abs(wrap(yaw_d - cur_yaw))  # beam error (hitscan: no lead)
+                if ch >= full - LASER_DIRECT_S:
+                    # last part of the charge: aim straight at the target for the beam;
+                    # the gun is judged on that same unled aim
+                    aim = [yaw_d, pit_d]
+                    err_l = err
+                else:
+                    # early in the charge: keep the gun's lead aim so its rounds can hit a mover;
+                    # err_l (lead error) still gates the gun below
+                    aim = [yaw_l, pit_l]
                 if ch >= full and err < tol * 1.3:
                     fire[lz] = False  # release
                 elif ch > 0.3 and err > 0.25:
                     fire[lz] = False
                 else:
                     fire[lz] = True
-                # The gun keeps firing during the charge, but only if the unled aim is on target.
-                err_l = err
             if g is not None:
                 w = me["weapons"][g]
                 if tgt_d < 215 and visible_los and err_l < tol and w.get("ammo", 1) > 0 and w["reload"] <= 0:
